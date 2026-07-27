@@ -2,6 +2,7 @@ import streamlit as st
 import joblib
 import pandas as pd
 import numpy as np
+import requests
 from pathlib import Path
 
 st.set_page_config(
@@ -10,18 +11,52 @@ st.set_page_config(
 )
 
 # -------------------------
-# Load model
+# Configuration
+# -------------------------
+
+TMDB_API_KEY = "71f0213080eaacc75c791f95ad8f005d"
+TMDB_BASE_URL = "https://api.themoviedb.org/3/movie/"
+TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w200"
+
+# -------------------------
+# Load model and data
 # -------------------------
 
 @st.cache_resource
 def load_model():
     return joblib.load(Path(__file__).parent / "uv_model_deploy.joblib")
 
+@st.cache_resource
+def load_links():
+    return pd.read_csv(Path(__file__).parent / "links.csv")
+
 model = load_model()
+links_df = load_links()
 
 Q = model["Q"]
 movie_idx = model["movie_idx"]
 movies_df = model["movies_df"]
+
+# -------------------------
+# Poster fetching
+# -------------------------
+
+@st.cache_data
+def get_poster(movie_id):
+    row = links_df[links_df["movieId"] == movie_id]
+    if row.empty or pd.isna(row["tmdbId"].iloc[0]):
+        return None
+    tmdb_id = int(row["tmdbId"].iloc[0])
+    try:
+        response = requests.get(
+            f"{TMDB_BASE_URL}{tmdb_id}",
+            params={"api_key": TMDB_API_KEY},
+            timeout=5
+        )
+        path = response.json().get("poster_path")
+        return f"{TMDB_IMG_BASE}{path}" if path else None
+    except Exception:
+        return None
 
 # -------------------------
 # Recommendation function
@@ -69,7 +104,7 @@ def recommend_uv(ratings_dict, n=10):
         .round(2)
     )
 
-    return result[["title", "predicted_rating"]]
+    return result[["movieId", "title", "predicted_rating"]]
 
 # -------------------------
 # Streamlit UI
@@ -107,7 +142,7 @@ if search_query:
                 movies_df["title"] == selected_movie, "movieId"
             ].iloc[0]
             st.session_state.ratings[movie_id] = selected_rating
-            st.success(f"Added **{selected_movie}** with rating {selected_rating}/5")
+            st.success(f"Added **{selected_movie}** with rating {selected_rating:.1f}/5.0")
     else:
         st.warning("No movies found. Try a different search.")
 
@@ -125,12 +160,18 @@ else:
             movies_df["movieId"] == movie_id, "title"
         ].iloc[0]
 
-        col1, col2 = st.columns([5, 1])
+        poster_url = get_poster(movie_id)
+
+        col1, col2, col3 = st.columns([1, 4, 1])
 
         with col1:
-            st.write(f"🎬 **{title}** — {rating}/5")
+            if poster_url:
+                st.image(poster_url, width=60)
 
         with col2:
+            st.write(f"🎬 **{title}** — {float(rating):.1f}/5.0")
+
+        with col3:
             if st.button("❌", key=f"delete_{movie_id}"):
                 del st.session_state.ratings[movie_id]
                 st.rerun()
@@ -148,7 +189,13 @@ if len(st.session_state.ratings) >= 5:
         if isinstance(results, pd.DataFrame) and not results.empty:
             st.subheader("Recommended movies")
             for _, row in results.iterrows():
-                st.write(f"🎬 **{row['title']}** — {row['predicted_rating']}/5")
+                poster_url = get_poster(row["movieId"])
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    if poster_url:
+                        st.image(poster_url, width=60)
+                with col2:
+                    st.write(f"🎬 **{row['title']}**")
         else:
             st.error("Could not generate recommendations. Please try rating different movies.")
 else:
