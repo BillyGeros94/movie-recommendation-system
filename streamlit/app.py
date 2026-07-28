@@ -14,7 +14,7 @@ st.set_page_config(
 # Configuration
 # -------------------------
 
-TMDB_API_KEY = "71f0213080eaacc75c791f95ad8f005d"
+TMDB_API_KEY = st.secrets["TMDB_API_KEY"]
 TMDB_BASE_URL = "https://api.themoviedb.org/3/movie/"
 TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w200"
 
