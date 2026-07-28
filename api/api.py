@@ -29,11 +29,11 @@ class ContentRequest(BaseModel):
     n: int = 10
 
 class ItemRequest(BaseModel):
-  movieId: int
+  movieId: List[int]
   n: int = 10
 
 class RatedMovie(BaseModel):
-  movieId: List[int]
+  movieId: int
   rating: float
 
 class UVRequest(BaseModel):
@@ -99,7 +99,7 @@ def item_recommend(request: ItemRequest):
   model = app.state.item_model
   
   # Filter to seed movies known to the model
-  valid_movies = [m for m in request.movieIds if m in model.movie_idx]
+  valid_movies = [m for m in request.movieId if m in model.movie_idx]
   
   # Build sparse rating and bias rows for the fake user across all seed movies
   fake_user_id = -1
