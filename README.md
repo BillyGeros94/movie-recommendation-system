@@ -60,7 +60,8 @@ movie-recommendation-system/
 │   ├── app.py                   # Streamlit demo
 │   ├── requirements.txt
 │   └── uv_model_deploy.joblib   # Lightweight deploy artifact
-└── presentation/
+├── presentation/
+│   └── Recommender Presentation.pptx # Final presentation slides
 ```
 
 ---
@@ -113,6 +114,15 @@ POST /recommend/content
 }
 ```
 
+**Item-based example:**
+```json
+POST /recommend/item
+{
+  "movieIds": [318, 296, 593],
+  "n": 10
+}
+```
+
 **UV example:**
 ```json
 POST /recommend/uv
@@ -133,7 +143,7 @@ An interactive demo of the UV model runs on Streamlit Cloud. The deployed artifa
 
 Users search for movies by title, rate at least 5, and receive 10 personalised recommendations.
 
-**Live demo:** *(link here once deployed)*
+**Live demo:** *[Movie Recommendation System](https://movie-recommender-billygeros.streamlit.app/)*
 
 ---
 
