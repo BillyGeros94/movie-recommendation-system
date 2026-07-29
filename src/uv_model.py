@@ -93,8 +93,7 @@ class UVDecomposition(BaseRecommender):
         p_grads = np.clip(p_grads, -5.0, 5.0)
 
         # Update user latent vectors
-        for i in range(self.n_factors):
-          np.add.at(self.P[:, i], u_batch, lr * p_grads[:, i])
+        np.add.at(self.P, u_batch, lr * p_grads)
 
         # Compute gradients for movies
         q_grads = batch_errors[:, np.newaxis] * self.P[u_batch] - reg * self.Q[m_batch]
@@ -103,8 +102,7 @@ class UVDecomposition(BaseRecommender):
         q_grads = np.clip(q_grads, -5.0, 5.0)
 
         # Update movie latent vectors
-        for i in range(self.n_factors):
-            np.add.at(self.Q[:, i], m_batch, lr * q_grads[:, i])
+        np.add.at(self.Q, m_batch, lr * q_grads)
 
         # Bias gradients
         b_u_grads = np.clip(batch_errors - reg * self.b_u[u_batch], -5.0, 5.0)
