@@ -54,10 +54,10 @@ movie-recommendation-system/
 │   └── evaluation.py            # Batched evaluation framework
 ├── api/
 │   ├── api.py                   # FastAPI application
-│   ├── requirements.txt
-│   └── *.joblib                 # Serialized models (git-ignored)
+│   └── requirements.txt
 ├── streamlit/
 │   ├── app.py                   # Streamlit demo
+│   ├── links.csv
 │   ├── requirements.txt
 │   └── uv_model_deploy.joblib   # Lightweight deploy artifact
 ├── presentation/
