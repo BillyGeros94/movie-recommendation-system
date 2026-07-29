@@ -8,6 +8,9 @@ import numpy as np
 from scipy.sparse import csr_matrix, vstack
 import joblib
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 
 # Set model directory path
 MODEL_DIR = Path(__file__).parent
@@ -149,6 +152,10 @@ def uv_recommend(request: UVRequest):
 
   rated_movie_indices = np.array(rated_movie_indices)
   ratings = np.array(ratings)
+
+  # Safeguard
+  if len(rated_movie_indices) == 0:
+    return []
 
   # Construct user latent vector as rating-weighted average of movie latent vectors
   weights = ratings / ratings.sum()
