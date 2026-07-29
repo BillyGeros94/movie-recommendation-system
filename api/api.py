@@ -167,6 +167,7 @@ def uv_recommend(request: UVRequest):
 
   model.user_idx[fake_user_id] = fake_user_idx
   model.P = np.vstack([model.P, P_new])
+  model.b_u = np.append(model.b_u, model.b_u.mean())
 
   # Add fake user's ratings so recommend() can filter out already-rated movies
   fake_rows = pd.DataFrame({
@@ -181,6 +182,7 @@ def uv_recommend(request: UVRequest):
   # Clean up fake user from model state
   del model.user_idx[fake_user_id]
   model.P = model.P[:-1]
+  model.b_u = model.b_u[:-1]
   model.train_df = model.train_df[model.train_df['userId'] != fake_user_id]
 
   return result[['title']].to_dict(orient='records')

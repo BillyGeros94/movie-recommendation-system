@@ -34,6 +34,9 @@ model = load_model()
 links_df = load_links()
 
 Q = model["Q"]
+b_i = model["b_i"]
+b_u_mean = model["b_u_mean"]
+global_mean = model["global_mean"]
 movie_idx = model["movie_idx"]
 movies_df = model["movies_df"]
 
@@ -81,7 +84,7 @@ def recommend_uv(ratings_dict, n=10):
     weights = ratings / ratings.sum()
     P_new = np.average(Q[rated_movie_indices], axis=0, weights=weights)
 
-    predicted_scores = np.dot(Q, P_new)
+    predicted_scores = global_mean + b_u_mean + b_i + np.dot(Q, P_new)
 
     recommendations = pd.DataFrame({
         "movieId": list(movie_idx.keys()),

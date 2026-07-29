@@ -5,7 +5,7 @@ from base_model import BaseRecommender
 class UVDecomposition(BaseRecommender):
 
   # Object initialization
-  def __init__(self, n_factors=15, std=0.05, seed=42):
+  def __init__(self, n_factors=50, std=0.05, seed=42):
     self.n_factors = n_factors
     self.std = std
     self.seed = seed
@@ -15,6 +15,8 @@ class UVDecomposition(BaseRecommender):
     self.Q = None
     self.train_df = None
     self.movies_df = None
+    self.b_u = None
+    self.b_i = None
     self.global_mean = 3.5
 
   def fit(self, train_df: pd.DataFrame, movies_df: pd.DataFrame, n_epochs=50, lr=0.001, reg=0.02, target_mse=0.55, batch_size=100000):
@@ -44,6 +46,10 @@ class UVDecomposition(BaseRecommender):
     # Initialise user latent factor matrix (P)
     self.P = np.random.normal(loc=mean_init, scale=self.std, size=(len(users), self.n_factors))
 
+    # Initialise biases
+    self.b_u = np.zeros(len(users))
+    self.b_i = np.zeros(len(movies))
+
     # Extract user, movieId and rating values
     user_indices = train_df['userId'].map(self.user_idx).values
     movie_indices = train_df['movieId'].map(self.movie_idx).values
@@ -71,7 +77,10 @@ class UVDecomposition(BaseRecommender):
         r_batch = ratings[batch_idx]
 
         # Predict ratings using dot product of latent vectors
-        batch_preds = np.sum(self.Q[m_batch] * self.P[u_batch], axis=1)
+        batch_preds = (self.global_mean 
+               + self.b_u[u_batch] 
+               + self.b_i[m_batch] 
+               + np.sum(self.Q[m_batch] * self.P[u_batch], axis=1))
 
         # Compute prediction errors
         batch_errors = r_batch - batch_preds
@@ -96,6 +105,14 @@ class UVDecomposition(BaseRecommender):
         # Update movie latent vectors
         for i in range(self.n_factors):
             np.add.at(self.Q[:, i], m_batch, lr * q_grads[:, i])
+
+        # Bias gradients
+        b_u_grads = np.clip(batch_errors - reg * self.b_u[u_batch], -5.0, 5.0)
+        b_i_grads = np.clip(batch_errors - reg * self.b_i[m_batch], -5.0, 5.0)
+        
+        # Bias updates
+        np.add.at(self.b_u, u_batch, lr * b_u_grads)
+        np.add.at(self.b_i, m_batch, lr * b_i_grads)
 
       # Compute Mean Squared Error for the epoch
       mse = epoch_squared_errors / num_observations
@@ -124,7 +141,9 @@ class UVDecomposition(BaseRecommender):
     valid = (u_idx >= 0) & (m_idx >= 0)
 
     # Predict ratings using latent vectors
-    preds[valid] = np.clip(np.sum(self.Q[m_idx[valid]] * self.P[u_idx[valid]], axis=1), 0.5, 5.0)
+    preds[valid] = np.clip( self.global_mean + self.b_u[u_idx[valid]] + self.b_i[m_idx[valid]] 
+      + np.sum(self.Q[m_idx[valid]] * self.P[u_idx[valid]], axis=1), 0.5, 5.0)
+
     return preds
 
   def recommend(self, user_id: int, n: int = 10) -> pd.DataFrame:
@@ -140,7 +159,8 @@ class UVDecomposition(BaseRecommender):
     rated_movies = self.train_df[self.train_df['userId'] == user_id]['movieId']
 
     # Predict ratings for every movie
-    all_preds = np.clip(np.dot(self.Q, self.P[user_row]), 0.5, 5.0)
+    all_preds = np.clip( self.global_mean + self.b_u[user_row] + self.b_i 
+    + np.dot(self.Q, self.P[user_row]), 0.5, 5.0)
 
     # Recover original movieId
     movie_ids = list(self.movie_idx.keys())
