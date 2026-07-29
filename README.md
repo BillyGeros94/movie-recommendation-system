@@ -14,7 +14,7 @@ This project builds a movie recommendation engine from scratch on the [MovieLens
 
 **Item-Based Collaborative Filtering** computes similarity between items based on how users have co-rated them. For a target user-item pair the model retrieves items the user has already rated, computes cosine similarity between those and the target item, and produces a prediction as the target item's mean rating adjusted by the similarity-weighted average of the user's mean-centred ratings on similar items.
 
-**UV Decomposition (Matrix Factorisation)** factorises the rating matrix into a user factor matrix P and an item factor matrix Q, each with 15 latent dimensions. Predicted ratings are dot products of the corresponding factor vectors. Both matrices are learned via mini-batch SGD with L2 regularisation, shuffling the data each epoch, with gradient clipping for stability. Training runs up to 50 epochs with early stopping when observed MSE falls below 0.60.
+**UV Decomposition (Matrix Factorisation)** factorises the rating matrix into a user factor matrix P and an item factor matrix Q, each with 50 latent dimensions. Predicted ratings are computed as μ + b_u + b_i + P·Q, augmenting the dot product with global, user, and item bias terms to explicitly separate popularity signal from latent preference structure. All parameters are learned jointly via mini-batch SGD with L2 regularisation, shuffling the data each epoch, with gradient clipping for stability. Training runs up to 50 epochs with early stopping when observed MSE falls below 0.55.
 
 ---
 
@@ -74,11 +74,22 @@ The `RecommenderEvaluator` class handles prediction in batches of 100,000 pairs 
 
 **Ranking quality** — how well each model orders items for a given user. Precision@10 is the fraction of the top-10 recommended items that are relevant (rating ≥ 3.5). Recall@10 is the fraction of all relevant items that appear in the top-10. nDCG@10 extends precision by accounting for position — a relevant item ranked first contributes more than one ranked tenth — and normalises against the ideal ranking.
 
-Full numerical results are reported in `notebooks/Recommender Report.ipynb`. Across all five metrics the consistent ranking is:
+---
 
-**UV Decomposition > User-Based > Item-Based > Content-Based**
+## Results
 
-UV leads on both accuracy and ranking simultaneously, which is not guaranteed — a model can predict ratings well without ranking well. That it dominates both dimensions indicates the latent factors capture preference structure relevant to both tasks. The high absolute values across all models (Precision@10 above 0.76 everywhere) reflect the density of the filtered population where every model has abundant signal. Content-based being last is structural rather than a failure: it predicts from metadata alone with no knowledge of how users actually rated.
+| Model | RMSE | MAE | Precision@10 | Recall@10 | nDCG@10 |
+|---|---|---|---|---|---|
+| Content-Based | 0.946 | 0.712 | 0.764 | 0.302 | 0.845 |
+| User-Based CF | 0.842 | 0.633 | 0.804 | 0.324 | 0.871 |
+| Item-Based CF | 0.877 | 0.659 | 0.791 | 0.318 | 0.860 |
+| UV Decomposition | 0.788 | 0.591 | 0.823 | 0.333 | 0.883 |
+
+*Evaluated on 5.2M held-out test pairs via temporal per-user split.*
+
+The ranking is consistent across all five metrics: **UV Decomposition > User-Based > Item-Based > Content-Based**.
+
+UV leads on both accuracy and ranking simultaneously, which is not guaranteed — a model can predict ratings well without ranking well. That it dominates both dimensions indicates the latent factors capture preference structure relevant to both tasks. User-based CF outperforms item-based, reflecting that user similarities on dense explicit data are more stable than item similarities, which are noisier due to heterogeneous audiences. Content-based being last is structural rather than a failure: it predicts from metadata alone with no knowledge of actual rating behaviour. The high absolute values across all models (Precision@10 above 0.76 everywhere) reflect the density of the filtered population where every model has abundant signal.
 
 ---
 
@@ -139,7 +150,7 @@ POST /recommend/uv
 
 ## Streamlit Demo
 
-An interactive demo of the UV model runs on Streamlit Cloud. The deployed artifact is a lightweight dict containing only the Q matrix and movie mappings (4.6MB), stored directly in the repository. A temporary user vector is constructed on the fly from the input ratings via weighted averaging of Q rows — no retraining or user history required.
+An interactive demo of the UV model runs on Streamlit Cloud. The deployed artifact is a lightweight dict containing the Q matrix, item bias vector, and movie mappings, stored directly in the repository. A temporary user vector is constructed on the fly from the input ratings via weighted averaging of Q rows — no retraining or user history required.
 
 Users search for movies by title, rate at least 5, and receive 10 personalised recommendations.
 
@@ -154,4 +165,5 @@ Users search for movies by title, rate at least 5, and receive 10 personalised r
 - **Sparse matrix storage** (CSR/CSC) throughout the CF models to keep 26M ratings in memory without materialising a dense 81K × 12K matrix.
 - **Batched prediction** in the evaluator to keep memory tractable on 5.2M test pairs.
 - **Gradient clipping** in UV training to prevent exploding updates at 26M observations per epoch.
+- **Bias terms** in UV decomposition to separate global and per-item popularity signal from latent preference structure, improving cold-start recommendation quality.
 - **Fake user injection** in the API endpoints to serve cold recommendations without modifying trained model state, with full cleanup after each request.
