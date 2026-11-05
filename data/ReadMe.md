@@ -7,9 +7,9 @@ https://grouplens.org/datasets/movielens/
 
 ## Data Acquisition
 
-The dataset is downloaded automatically during execution of the main notebook using the official GroupLens URL.
+`python train.py` downloads the dataset from the official GroupLens URL into this folder on first run, then reuses it. These files are ignored by git.
 
-The pipeline retrieves and extracts the following files directly from the compressed MovieLens archive:
+The pipeline uses these files from the MovieLens archive:
 
 - `ratings.csv`
 - `movies.csv`
@@ -79,3 +79,20 @@ Columns:
 - `relevance`
 
 Used to select high-relevance tags for the TF-IDF content representation.
+
+## Dataset Version
+
+This is `ml-latest`, generated on July 20, 2023. GroupLens describes it as a development dataset that may change over time and is not appropriate for shared research results, so a later download may not reproduce these numbers exactly. The stable alternatives are the GroupLens benchmark datasets.
+
+## License and Citation
+
+The data belongs to GroupLens Research and is not covered by this repository's MIT license. Its terms apply to the data and to files derived from it, including `streamlit/links.csv` and the model artifacts in `api/models/` and `streamlit/`. In summary:
+
+- Do not state or imply endorsement by the University of Minnesota or GroupLens.
+- Acknowledge the data set in publications.
+- Redistribution, including transformations, must be under the same license conditions.
+- No commercial or revenue-bearing use without first getting permission from GroupLens.
+
+The full terms are in the `README.txt` inside the dataset archive.
+
+> F. Maxwell Harper and Joseph A. Konstan. 2015. The MovieLens Datasets: History and Context. ACM Transactions on Interactive Intelligent Systems (TiiS) 5, 4: 19:1–19:19. https://doi.org/10.1145/2827872

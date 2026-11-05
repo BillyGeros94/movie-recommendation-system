@@ -2,8 +2,8 @@
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_squared_error, mean_absolute_error, root_mean_squared_error
-from typing import Dict
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
+from typing import Dict, Optional
 
 class RecommenderEvaluator():
 
@@ -32,10 +32,15 @@ class RecommenderEvaluator():
 
       # Generate predictions for the chunk
       all_preds[start_idx:end_idx] = model.predict(u_chunk, m_chunk)
-      
+
     return all_preds
 
-  def full_evaluation(self, model, n: int = 10, threshold: float = 3.5) -> Dict[str, float]:
+  def full_evaluation(self, model, n: int = 10, threshold: float = 3.5) -> Dict[str, Optional[float]]:
+    """Rating accuracy, plus re-ranking quality within each user's held-out movies.
+
+    The ranking metrics here only reorder movies the user is already known to have rated, so
+    even a random order scores well. Use catalogue_evaluation() to measure recommendation.
+    """
 
     # True ratings
     actuals = self.test_df['rating'].values
@@ -43,14 +48,18 @@ class RecommenderEvaluator():
     # Predicted ratings
     preds = self._batched_predict(model, self.test_df['userId'].values, self.test_df['movieId'].values)
 
-    results = {
-      'RMSE': round(float(root_mean_squared_error(actuals, preds)), 3),
-      'MAE': round(float(mean_absolute_error(actuals, preds)), 3)
-    }
+    # Models that only rank have no meaningful rating error
+    if model.rating_model:
+      results = {
+        'RMSE': round(float(root_mean_squared_error(actuals, preds)), 3),
+        'MAE': round(float(mean_absolute_error(actuals, preds)), 3)
+      }
+    else:
+      results = {'RMSE': None, 'MAE': None}
 
     # Create a copy of the test data
     test = self.test_df.copy()
-    
+
     test['pred'] = preds
 
     # Rank predicted movies for each user and keep only the Top-N recommendations
@@ -96,3 +105,58 @@ class RecommenderEvaluator():
     })
 
     return results
+
+  def catalogue_evaluation(self, model, train_df: pd.DataFrame, n: int = 10, threshold: float = 3.5,
+                           users: Optional[np.ndarray] = None) -> Dict[str, float]:
+    """Recommendation quality: rank every movie a user has not rated in training, keep the top N.
+
+    A hit is a recommended movie the user later rated at or above the threshold. Unrated does not
+    mean disliked, so absolute values are lower bounds. Compare models against each other.
+    Coverage is the share of the catalogue recommended to anyone. Popularity is the mean
+    percentile of recommended movies by training rating count, where 100 is the most rated.
+    """
+
+    if users is None:
+      users = self.test_df['userId'].unique()
+
+    # Group training and relevant test movies by user, once
+    seen_by_user = {u: g.values for u, g in train_df.loc[train_df['userId'].isin(users), 'movieId'].groupby(train_df['userId'])}
+    relevant = self.test_df[(self.test_df['rating'] >= threshold) & self.test_df['userId'].isin(users)]
+    relevant_by_user = {u: set(g.tolist()) for u, g in relevant['movieId'].groupby(relevant['userId'])}
+
+    # Popularity percentile of every movie in the catalogue
+    popularity = train_df['movieId'].value_counts().rank(pct=True) * 100
+
+    discounts = 1.0 / np.log2(np.arange(2, n + 2))
+    precisions, recalls, ndcgs = [], [], []
+    recommended = []
+
+    for user_id in users:
+      user_id = int(user_id)
+      movie_ids, scores = model.score_catalogue(user_id)
+
+      # Top N among movies unseen in training
+      scores = np.where(np.isin(movie_ids, seen_by_user.get(user_id, [])), -np.inf, scores)
+      top = np.argpartition(-scores, n)[:n]
+      top = top[np.argsort(-scores[top], kind='stable')]
+      top_ids = movie_ids[top]
+      recommended.append(top_ids)
+
+      # Users with nothing relevant cannot be scored for recall or nDCG
+      liked = relevant_by_user.get(user_id, set())
+      hits = np.array([m in liked for m in top_ids.tolist()], dtype=float)
+      precisions.append(hits.mean())
+      if liked:
+        recalls.append(hits.sum() / len(liked))
+        ndcgs.append((hits * discounts).sum() / discounts[:min(len(liked), n)].sum())
+
+    recommended = np.concatenate(recommended)
+    catalogue_size = train_df['movieId'].nunique()
+
+    return {
+      f'Catalogue P@{n}': round(float(np.mean(precisions)), 4),
+      f'Catalogue R@{n}': round(float(np.mean(recalls)), 4),
+      f'Catalogue nDCG@{n}': round(float(np.mean(ndcgs)), 4),
+      'Coverage': round(float(len(np.unique(recommended)) / catalogue_size), 4),
+      'Popularity percentile': round(float(popularity.reindex(recommended).mean()), 2)
+    }

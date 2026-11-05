@@ -1,89 +1,100 @@
 # Load Dependencies
 
+from typing import List, Tuple
+
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix, vstack
+from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
 from base_model import BaseRecommender
 
+def split_genres(genres) -> List[str]:
+
+  # Genres arrive as 'A|B' from the CSV, or as a list once parsed
+  if isinstance(genres, (list, tuple, np.ndarray)):
+    values = list(genres)
+  elif pd.isna(genres):
+    values = []
+  else:
+    values = str(genres).split('|')
+  return [g for g in values if g and g != '(no genres listed)']
+
 class ContentBasedRecommender(BaseRecommender):
+
+  training_only = ('train_df', 'interactions', 'user_means', 'user_idx')
 
   # Object initialization
   def __init__(self):
     self.vectorizer = TfidfVectorizer(max_df=0.8, stop_words='english')
-    self.user_profiles_matrix = None
-    self.user_profiles_norms = None
-    self.user_idx_map = {}
+    self.interactions = None
+    self.user_means = None
+    self.user_idx = {}
     self.tfidf_matrix = None
-    self.tfidf_norms = None
     self.movie_idx = {}
-    self.movies_df = None
     self.train_df = None
+    self.genres = []
     self.global_mean = 3.5
+    self.rating_std = 1.0
 
   def fit(self, train_df: pd.DataFrame, movies_df: pd.DataFrame, tags_df: pd.DataFrame = None, scores_df: pd.DataFrame = None):
 
-    # Store training and movie data
-    self.train_df = train_df
-    self.movies_df = movies_df.copy()
-
-    # Compute global mean rating 
+    # Compute global mean rating and spread
     self.global_mean = float(train_df['rating'].mean())
+    self.rating_std = float(train_df['rating'].std())
 
-    # Prepare genre metadata 
-    self.movies_df['genres_str'] = self.movies_df['genres'].fillna('').astype('str').apply(
-      lambda x: ' '.join(x) if isinstance(x, list) else str(x).replace('|', ' ')
-    )
+    # The catalogue is the set of movies with training ratings
+    catalogue = movies_df[movies_df['movieId'].isin(train_df['movieId'].unique())].reset_index(drop=True)
+    self._store_catalogue(train_df, movies_df, catalogue['movieId'].values)
+
+    # Prepare genre metadata
+    genre_lists = catalogue['genres'].apply(split_genres)
+    self.genres = sorted({genre for genres in genre_lists for genre in genres})
+    metadata_corpus = genre_lists.apply(' '.join)
 
     if tags_df is not None and scores_df is not None:
       # Merge tag metadata with relevance scores and keep strong tags
-      merged_tags = pd.merge(scores_df, tags_df, on='tagId')
-      strong_tags = merged_tags[merged_tags['relevance'] >= 0.5]
+      strong_scores = scores_df[scores_df['relevance'] >= 0.5]
+      strong_tags = pd.merge(strong_scores, tags_df, on='tagId')
 
-      # Group tags by movieID and merge them with movies
-      grouped_tags = strong_tags.groupby('movieId')['tag'].apply(lambda x: ' '.join(x)).reset_index()
-      movie_metadata = pd.merge(self.movies_df, grouped_tags, on='movieId', how='left')
+      # Group tags by movieId and append them to the genres
+      grouped_tags = strong_tags.groupby('movieId')['tag'].apply(' '.join)
+      metadata_corpus = metadata_corpus + ' ' + catalogue['movieId'].map(grouped_tags).fillna('')
 
-      # Movie-metadata corpus
-      movie_metadata['tag'] = movie_metadata['tag'].fillna('')
-      metadata_corpus = movie_metadata['genres_str'] + ' ' + movie_metadata['tag']
-    else:
-      metadata_corpus = self.movies_df['genres_str']
-
-    # Convert movie metadata into TF-IDF feature matrix
+    # Convert movie metadata into TF-IDF feature matrix, with unit-length rows
     self.tfidf_matrix = self.vectorizer.fit_transform(metadata_corpus).tocsr()
 
-    # Pair movieId with index
-    self.movie_idx = {movie_id: idx for idx, movie_id in enumerate(self.movies_df['movieId'])}
+    # Create mappings between IDs and matrix indices
+    self.movie_idx = {m: i for i, m in enumerate(self.movie_ids.tolist())}
+    users = train_df['userId'].unique()
+    self.user_idx = {u: i for i, u in enumerate(users.tolist())}
 
-    # Compute TF-IDF vector magnitudes for cosine similarity
-    self.tfidf_norms = np.asarray(np.sqrt(self.tfidf_matrix.power(2).sum(axis=1))).flatten()
-    self.tfidf_norms[self.tfidf_norms == 0] = 1.0
-
-    # Get unique users and pair with index
-    unique_users = train_df['userId'].unique()
-    self.user_idx_map = {u: i for i, u in enumerate(unique_users)}
-
-    # Extract user and movieId values
-    user_rows = train_df['userId'].map(self.user_idx_map).values
+    # Extract user and movie indices
+    user_rows = train_df['userId'].map(self.user_idx).values
     movie_cols = train_df['movieId'].map(self.movie_idx).values
 
-    # Mean-centre ratings by subtracting the global average
-    centered_ratings = train_df['rating'].values - self.global_mean
+    # Centre on each user's own mean, so a movie counts as liked relative to how that user rates
+    self.user_means = train_df.groupby('userId')['rating'].mean().reindex(users).values.astype(np.float64)
+    centered_ratings = train_df['rating'].values - self.user_means[user_rows]
 
-    # Create user-item interaction matrix
-    interaction_matrix = csr_matrix(
-      (centered_ratings, (user_rows, movie_cols)),
-      shape=(len(unique_users), self.tfidf_matrix.shape[0])
+    # Store weights rather than profiles: built on demand, because 81K stored profiles would need over 1GB
+    self.interactions = csr_matrix(
+      (centered_ratings.astype(np.float32), (user_rows, movie_cols)),
+      shape=(len(users), self.tfidf_matrix.shape[0])
     )
 
-    # Build user preference profiles by aggregating weighted movie TF-IDF features 
-    self.user_profiles_matrix = interaction_matrix.dot(self.tfidf_matrix)
-    self.user_profiles_norms = np.asarray(np.sqrt(self.user_profiles_matrix.power(2).sum(axis=1))).flatten()
-    self.user_profiles_norms[self.user_profiles_norms == 0] = 1.0
+  def _similarities(self, profile: csr_matrix) -> np.ndarray:
 
-    # Compute rating standard deviation for scaling similarity scores
-    self.rating_std = float(train_df['rating'].std())
+    # Cosine similarity between a profile and every movie
+    norm = np.sqrt(profile.multiply(profile).sum())
+    if norm == 0:
+      return np.zeros(self.tfidf_matrix.shape[0])
+    return self.tfidf_matrix.dot(profile.T).toarray().flatten() / norm
+
+  def _user_scores(self, u_row: int) -> np.ndarray:
+
+    # Weighted sum of rated movie vectors: liked movies pull the profile in, disliked movies push it away
+    profile = self.interactions.getrow(u_row).dot(self.tfidf_matrix)
+    return self.user_means[u_row] + self._similarities(profile) * self.rating_std
 
   def predict(self, user_ids: np.ndarray, movie_ids: np.ndarray) -> np.ndarray:
 
@@ -95,62 +106,30 @@ class ContentBasedRecommender(BaseRecommender):
     preds = np.full(len(user_ids), self.global_mean)
 
     # Map userId and movieId to internal matrix indices
-    u_rows = pd.Series(user_ids).map(self.user_idx_map).fillna(-1).astype(int).values
+    u_rows = pd.Series(user_ids).map(self.user_idx).fillna(-1).astype(int).values
     m_cols = pd.Series(movie_ids).map(self.movie_idx).fillna(-1).astype(int).values
 
-    # Keep only valid user and movie mappings
-    valid = (u_rows >= 0) & (m_cols >= 0)
-    if not np.any(valid):
-      return preds
+    # An unknown movie falls back to the user's mean
+    known_users = u_rows >= 0
+    preds[known_users] = self.user_means[u_rows[known_users]]
 
-    # Extract valid user and movie indices
-    valid_u = u_rows[valid]
-    valid_m = m_cols[valid]
+    # Score each user's candidates together
+    known = np.flatnonzero(known_users & (m_cols >= 0))
+    for u_row, positions in pd.Series(known).groupby(u_rows[known]):
+      positions = positions.values
+      preds[positions] = self._user_scores(u_row)[m_cols[positions]]
 
-    # Retrieve user preference vectors and candidate movie feature vectors
-    u_vectors = self.user_profiles_matrix[valid_u]
-    m_vectors = self.tfidf_matrix[valid_m]
+    return np.clip(preds, 0.5, 5.0)
 
-    # Compute cosine similarity between user preference profile and candidate movie profile
-    numerators = np.asarray(u_vectors.multiply(m_vectors).sum(axis=1)).flatten()
-    denominators = self.user_profiles_norms[valid_u] * self.tfidf_norms[valid_m]
+  def score_catalogue(self, user_id: int) -> Tuple[np.ndarray, np.ndarray]:
+    return self.movie_ids, self._user_scores(self.user_idx[user_id])
 
-    # Clip cosine similarity scores within range [-1.0, 1.0]
-    scores = np.clip(numerators / denominators, -1.0, 1.0)
+  def recommend_from_text(self, text: str, n: int = 10) -> pd.DataFrame:
 
-    # Convert similarity scores into predicted ratings and clip to valid rating range
-    preds[valid] = np.clip(self.global_mean + scores * self.rating_std, 0.5, 5.0)
-    return preds
+    # Serve a free-text profile without changing model state
+    query = self.vectorizer.transform([text])
+    if query.nnz == 0:
+      return pd.DataFrame(columns=['movieId', 'title', 'predicted_rating'])
 
-  def recommend(self, user_id: int, n: int = 10) -> pd.DataFrame:
-
-    # Return empty if user not found
-    if user_id not in self.user_idx_map:
-      return pd.DataFrame(columns=['title', 'predicted_rating'])
-
-    # Get user vector 
-    u_row = self.user_idx_map[user_id]
-    u_vector = self.user_profiles_matrix.getrow(u_row)
-
-    # Compute cosine similarity scores for all candidate movies
-    numerators = self.tfidf_matrix.dot(u_vector.T).toarray().flatten()
-    denominators = self.user_profiles_norms[u_row] * self.tfidf_norms
-    scores = np.clip(numerators / denominators, -1.0, 1.0)
-    scaled_scores = np.clip(self.global_mean + scores * self.rating_std, 0.5, 5.0)
-
-    # Construct recommendations df
-    recommendations = pd.DataFrame({
-      'movieId': self.movies_df['movieId'].values,
-      'predicted_rating': scaled_scores
-    })
-
-    # Filter for unrated movies
-    rated_movies = self.train_df[self.train_df['userId'] == user_id]['movieId']
-    unrated = recommendations[~recommendations['movieId'].isin(rated_movies)]
-
-    # Get top n recommendations
-    top_df = unrated.nlargest(n, 'predicted_rating')
-    result = top_df.merge(self.movies_df[['movieId', 'title']], on='movieId')[['title', 'predicted_rating']]
-    result['predicted_rating'] = result['predicted_rating'].round(3)
-
-    return result.reset_index(drop=True)
+    scores = self.global_mean + self._similarities(query) * self.rating_std
+    return self._top_n(self.movie_ids, scores, set(), n)

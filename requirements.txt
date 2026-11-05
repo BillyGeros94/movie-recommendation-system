@@ -1,0 +1,11 @@
+# Training, evaluation and tests. Python 3.13
+numpy==2.5.4
+pandas==3.1.0
+scipy==1.18.1
+scikit-learn==1.9.1
+joblib==1.6.0
+requests==2.34.2
+fastapi==0.141.1
+pydantic==2.14.1
+httpx==0.28.1
+pytest==9.1.1

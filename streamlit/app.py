@@ -1,9 +1,10 @@
 import streamlit as st
 import joblib
 import pandas as pd
-import numpy as np
 import requests
 from pathlib import Path
+
+from recommender import MIN_RATINGS, recommend_uv, search_movies
 
 st.set_page_config(
     page_title="Movie Recommender",
@@ -14,9 +15,14 @@ st.set_page_config(
 # Configuration
 # -------------------------
 
-TMDB_API_KEY = st.secrets["TMDB_API_KEY"]
 TMDB_BASE_URL = "https://api.themoviedb.org/3/movie/"
 TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w200"
+
+# Posters are optional, so the app also runs without a TMDB key
+try:
+    TMDB_API_KEY = st.secrets.get("TMDB_API_KEY")
+except Exception:
+    TMDB_API_KEY = None
 
 # -------------------------
 # Load model and data
@@ -33,12 +39,9 @@ def load_links():
 model = load_model()
 links_df = load_links()
 
-Q = model["Q"]
-b_i = model["b_i"]
-b_u_mean = model["b_u_mean"]
-global_mean = model["global_mean"]
-movie_idx = model["movie_idx"]
-movies_df = model["movies_df"]
+# Only movies the model knows can be searched and rated
+movies_df = pd.DataFrame({"movieId": model["movie_ids"], "title": model["titles"]})
+titles_by_id = dict(zip(movies_df["movieId"].tolist(), movies_df["title"].tolist()))
 
 # -------------------------
 # Poster fetching
@@ -46,6 +49,8 @@ movies_df = model["movies_df"]
 
 @st.cache_data
 def get_poster(movie_id):
+    if not TMDB_API_KEY:
+        return None
     row = links_df[links_df["movieId"] == movie_id]
     if row.empty or pd.isna(row["tmdbId"].iloc[0]):
         return None
@@ -62,59 +67,11 @@ def get_poster(movie_id):
         return None
 
 # -------------------------
-# Recommendation function
-# -------------------------
-
-def recommend_uv(ratings_dict, n=10):
-
-    rated_movie_indices = []
-    ratings = []
-
-    for movie_id, rating in ratings_dict.items():
-        if movie_id in movie_idx:
-            rated_movie_indices.append(movie_idx[movie_id])
-            ratings.append(rating)
-
-    rated_movie_indices = np.array(rated_movie_indices)
-    ratings = np.array(ratings)
-
-    if len(rated_movie_indices) < 5:
-        return pd.DataFrame()
-
-    weights = ratings / ratings.sum()
-    P_new = np.average(Q[rated_movie_indices], axis=0, weights=weights)
-
-    predicted_scores = global_mean + b_u_mean + b_i + np.dot(Q, P_new)
-
-    recommendations = pd.DataFrame({
-        "movieId": list(movie_idx.keys()),
-        "predicted_rating": predicted_scores
-    })
-
-    recommendations = recommendations[
-        ~recommendations["movieId"].isin(ratings_dict.keys())
-    ]
-
-    result = (
-        recommendations
-        .nlargest(n, "predicted_rating")
-        .merge(movies_df, on="movieId")
-    )
-
-    result["predicted_rating"] = (
-        result["predicted_rating"]
-        .clip(0.5, 5.0)
-        .round(2)
-    )
-
-    return result[["movieId", "title", "predicted_rating"]]
-
-# -------------------------
 # Streamlit UI
 # -------------------------
 
 st.title("🎬 Movie Recommendation System")
-st.write("Rate at least 5 movies and get personalised recommendations.")
+st.write(f"Rate at least {MIN_RATINGS} movies and get personalised recommendations.")
 
 if "ratings" not in st.session_state:
     st.session_state.ratings = {}
@@ -126,11 +83,14 @@ if "ratings" not in st.session_state:
 search_query = st.text_input("Search for a movie")
 
 if search_query:
-    filtered = movies_df[
-        movies_df["title"].str.contains(search_query, case=False, na=False)
-    ]
+    filtered = search_movies(movies_df, search_query)
     if not filtered.empty:
-        selected_movie = st.selectbox("Select a movie", filtered["title"].tolist())
+        # Select by movieId, because different movies can share a title
+        movie_id = st.selectbox(
+            "Select a movie",
+            filtered["movieId"].tolist(),
+            format_func=lambda m: titles_by_id[m]
+        )
 
         selected_rating = st.slider(
             "Your rating",
@@ -141,11 +101,8 @@ if search_query:
         )
 
         if st.button("Add movie"):
-            movie_id = movies_df.loc[
-                movies_df["title"] == selected_movie, "movieId"
-            ].iloc[0]
             st.session_state.ratings[movie_id] = selected_rating
-            st.success(f"Added **{selected_movie}** with rating {selected_rating:.1f}/5.0")
+            st.success(f"Added **{titles_by_id[movie_id]}** with rating {selected_rating:.1f}/5.0")
     else:
         st.warning("No movies found. Try a different search.")
 
@@ -159,10 +116,6 @@ if len(st.session_state.ratings) == 0:
     st.info("No movies rated yet.")
 else:
     for movie_id, rating in list(st.session_state.ratings.items()):
-        title = movies_df.loc[
-            movies_df["movieId"] == movie_id, "title"
-        ].iloc[0]
-
         poster_url = get_poster(movie_id)
 
         col1, col2, col3 = st.columns([1, 4, 1])
@@ -172,7 +125,7 @@ else:
                 st.image(poster_url, width=60)
 
         with col2:
-            st.write(f"🎬 **{title}** — {float(rating):.1f}/5.0")
+            st.write(f"🎬 **{titles_by_id[movie_id]}** — {float(rating):.1f}/5.0")
 
         with col3:
             if st.button("❌", key=f"delete_{movie_id}"):
@@ -185,21 +138,23 @@ else:
 
 st.write(f"Movies rated: {len(st.session_state.ratings)}")
 
-if len(st.session_state.ratings) >= 5:
+if len(st.session_state.ratings) >= MIN_RATINGS:
     if st.button("Get Recommendations"):
-        results = recommend_uv(st.session_state.ratings, n=10)
+        results = recommend_uv(model, st.session_state.ratings, n=10)
 
-        if isinstance(results, pd.DataFrame) and not results.empty:
-            st.subheader("Recommended movies")
-            for _, row in results.iterrows():
-                poster_url = get_poster(row["movieId"])
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if poster_url:
-                        st.image(poster_url, width=60)
-                with col2:
-                    st.write(f"🎬 **{row['title']}**")
-        else:
-            st.error("Could not generate recommendations. Please try rating different movies.")
+        st.subheader("Recommended movies")
+        for _, row in results.iterrows():
+            poster_url = get_poster(row["movieId"])
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if poster_url:
+                    st.image(poster_url, width=60)
+            with col2:
+                st.write(f"🎬 **{row['title']}**")
 else:
-    st.warning("Please rate at least 5 movies first.")
+    st.warning(f"Please rate at least {MIN_RATINGS} movies first.")
+
+st.caption(
+    "Ratings data: MovieLens, GroupLens Research. "
+    "This product uses the TMDB API but is not endorsed or certified by TMDB."
+)

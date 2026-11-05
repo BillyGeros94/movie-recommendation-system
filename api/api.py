@@ -1,188 +1,91 @@
 # Load Dependencies
-from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
-from typing import List
-import pandas as pd
-import numpy as np
-from scipy.sparse import csr_matrix, vstack
-import joblib
 from pathlib import Path
+from typing import List
 import sys
+
+import joblib
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
 
 # Set model directory path
-MODEL_DIR = Path(__file__).parent
+MODEL_DIR = Path(__file__).parent / 'models'
+MODEL_FILES = {'content_model': 'content.joblib', 'item_model': 'item.joblib', 'uv_model': 'uv.joblib'}
 
-# Load all models once at startup and store in application state
+# Load all models once at startup and store in application state. Requests only read them
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.content_model = joblib.load(MODEL_DIR / 'content_model.joblib')
-    app.state.item_model = joblib.load(MODEL_DIR / 'item_model.joblib')
-    app.state.uv_model = joblib.load(MODEL_DIR / 'uv_model.joblib')
-    yield
+  for name, filename in MODEL_FILES.items():
+    path = MODEL_DIR / filename
+    if not path.exists():
+      raise RuntimeError(f'Missing model file {path}. Run "python train.py" from the repository root to create it.')
+    setattr(app.state, name, joblib.load(path))
+  yield
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title='Movie Recommendation API', lifespan=lifespan)
 
 # Request Schemas
 class ContentRequest(BaseModel):
-    genres: List[str]
-    tags: List[str]
-    n: int = 10
+  genres: List[str] = []
+  tags: List[str] = []
+  n: int = Field(10, ge=1, le=100)
 
 class ItemRequest(BaseModel):
-  movieId: List[int]
-  n: int = 10
+  movieIds: List[int] = Field(min_length=1)
+  n: int = Field(10, ge=1, le=100)
 
 class RatedMovie(BaseModel):
   movieId: int
-  rating: float
+  rating: float = Field(ge=0.5, le=5.0)
 
 class UVRequest(BaseModel):
-  rated_movies: List[RatedMovie]
-  n: int = 10
+  rated_movies: List[RatedMovie] = Field(min_length=1)
+  n: int = Field(10, ge=1, le=100)
 
-# Return a sorted list of all unique genres in the content model vocabulary
-@app.get("/genres")
+def to_response(recommendations):
+  return recommendations[['movieId', 'title']].to_dict(orient='records')
+
+# Return a sorted list of all genres the content model knows
+@app.get('/genres')
 def get_genres():
-    model = app.state.content_model
-    genres = set()
-    for g in model.movies_df['genres_str']:
-        for genre in g.split():
-            genres.add(genre)
-    return sorted(list(genres))
+  return app.state.content_model.genres
 
-# Return a sorted list of all genome tags in the TF-IDF vocabulary
-@app.get("/tags")
+# Return a sorted list of all terms in the TF-IDF vocabulary
+@app.get('/tags')
 def get_tags():
-    model = app.state.content_model
-    return sorted(list(model.vectorizer.vocabulary_.keys()))
+  return sorted(app.state.content_model.vectorizer.vocabulary_.keys())
 
-# Search for movies by title substring
-@app.get("/movies/search")
-def search_movies(query: str):
-  model = app.state.item_model
-  known_movie_ids = set(model.movie_idx.keys())
-  results = model.movies_df[
-    model.movies_df['title'].str.contains(query, case=False, na=False) &
-    model.movies_df['movieId'].isin(known_movie_ids)
-  ]
-  return results[['movieId', 'title']].head(10).to_dict(orient='records')
+# Search for movies by title substring, treating the query as plain text
+@app.get('/movies/search')
+def search_movies(query: str = Query(min_length=1)):
+  needle = query.lower()
+  titles = app.state.item_model.titles
+  matches = [{'movieId': m, 'title': t} for m, t in titles.items() if needle in t.lower()]
+  return matches[:10]
 
 # Content-based recommendations
-@app.post("/recommend/content")
+@app.post('/recommend/content')
 def content_recommend(request: ContentRequest):
-  model = app.state.content_model
+  result = app.state.content_model.recommend_from_text(' '.join(request.genres + request.tags), request.n)
+  if result.empty:
+    raise HTTPException(422, 'None of the genres or tags are in the model vocabulary. See /genres and /tags.')
+  return to_response(result)
 
-  # Build metadata string and transform into TF-IDF vector
-  metadata = ' '.join(request.genres) + ' ' + ' '.join(request.tags)
-  u_vector = model.vectorizer.transform([metadata])
-
-  # Inject fake user into model state
-  fake_user_id = -1
-  fake_user_idx = model.user_profiles_matrix.shape[0]
-
-  model.user_idx_map[fake_user_id] = fake_user_idx
-  model.user_profiles_matrix = vstack([model.user_profiles_matrix, u_vector])
-  model.user_profiles_norms = np.append(model.user_profiles_norms, np.sqrt(u_vector.power(2).sum()))
-
-  # Retrieve recommendations
-  result = model.recommend(fake_user_id, request.n)
-
-  # Clean up fake user from model state  
-  del model.user_idx_map[fake_user_id]
-  model.user_profiles_matrix = model.user_profiles_matrix[:-1]
-  model.user_profiles_norms = model.user_profiles_norms[:-1]
-
-  return result[['title']].to_dict(orient='records')
-
-@app.post("/recommend/item")
+# Item-based recommendations
+@app.post('/recommend/item')
 def item_recommend(request: ItemRequest):
-  model = app.state.item_model
-  
-  # Filter to seed movies known to the model
-  valid_movies = [m for m in request.movieId if m in model.movie_idx]
-  
-  # Build sparse rating and bias rows for the fake user across all seed movies
-  fake_user_id = -1
-  fake_user_idx = model.r_matrix.shape[0]
-  n_movies = model.r_matrix.shape[1]
-  
-  movie_cols = [model.movie_idx[m] for m in valid_movies]
-  rating_vals = [5.0] * len(valid_movies)
-  bias_vals = [5.0 - model.movie_means[m] for m in valid_movies]
-  row_indices = [0] * len(valid_movies)
-  
-  fake_r_row = csr_matrix((rating_vals, (row_indices, movie_cols)), shape=(1, n_movies))
-  fake_b_row = csr_matrix((bias_vals, (row_indices, movie_cols)), shape=(1, n_movies))
-  
-  # Inject fake user into model state
-  model.user_idx[fake_user_id] = fake_user_idx
-  model.user_inv_idx[fake_user_idx] = fake_user_id
-  model.user_means[fake_user_id] = 5.0
-  model.r_matrix = vstack([model.r_matrix, fake_r_row]).tocsr()
-  model.r_csc = model.r_matrix.tocsc()
-  model.b_matrix = vstack([model.b_matrix, fake_b_row]).tocsr()
-  
-  result = model.recommend(fake_user_id, request.n)
-  
-  # Clean up fake user from model state
-  del model.user_idx[fake_user_id]
-  del model.user_inv_idx[fake_user_idx]
-  del model.user_means[fake_user_id]
-  model.r_matrix = model.r_matrix[:-1]
-  model.b_matrix = model.b_matrix[:-1]
-  model.r_csc = model.r_matrix.tocsc()
-  
-  return result[['title']].to_dict(orient='records')
+  result = app.state.item_model.recommend_from_seeds(request.movieIds, request.n)
+  if result.empty:
+    raise HTTPException(422, 'None of the movieIds are in the model. Use /movies/search to find valid IDs.')
+  return to_response(result)
 
-@app.post("/recommend/uv")
+# Matrix factorisation recommendations
+@app.post('/recommend/uv')
 def uv_recommend(request: UVRequest):
-  model = app.state.uv_model
-
-  # Map rated movies to matrix indices and collect ratings
-  rated_movie_indices = []
-  ratings = []
-
-  for rm in request.rated_movies:
-    if rm.movieId in model.movie_idx:
-      rated_movie_indices.append(model.movie_idx[rm.movieId])
-      ratings.append(rm.rating)
-
-  rated_movie_indices = np.array(rated_movie_indices)
-  ratings = np.array(ratings)
-
-  # Safeguard
-  if len(rated_movie_indices) == 0:
-    return []
-
-  # Construct user latent vector as rating-weighted average of movie latent vectors
-  weights = ratings / ratings.sum()
-  P_new = np.average(model.Q[rated_movie_indices], axis=0, weights=weights)
-
-  # Inject fake user into model state
-  fake_user_id = -1
-  fake_user_idx = model.P.shape[0]
-
-  model.user_idx[fake_user_id] = fake_user_idx
-  model.P = np.vstack([model.P, P_new])
-  model.b_u = np.append(model.b_u, model.b_u.mean())
-
-  # Add fake user's ratings so recommend() can filter out already-rated movies
-  fake_rows = pd.DataFrame({
-    'userId': fake_user_id,
-    'movieId': [rm.movieId for rm in request.rated_movies],
-    'rating': [rm.rating for rm in request.rated_movies]
-  })
-  model.train_df = pd.concat([model.train_df, fake_rows], ignore_index=True)
-
-  result = model.recommend(fake_user_id, request.n)
-
-  # Clean up fake user from model state
-  del model.user_idx[fake_user_id]
-  model.P = model.P[:-1]
-  model.b_u = model.b_u[:-1]
-  model.train_df = model.train_df[model.train_df['userId'] != fake_user_id]
-
-  return result[['title']].to_dict(orient='records')
+  ratings = {movie.movieId: movie.rating for movie in request.rated_movies}
+  result = app.state.uv_model.recommend_new_user(ratings, request.n)
+  if result.empty:
+    raise HTTPException(422, 'None of the rated movies are in the model. Use /movies/search to find valid IDs.')
+  return to_response(result)

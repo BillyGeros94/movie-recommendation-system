@@ -1,72 +1,117 @@
 # Load Dependencies
 
+from typing import Tuple
+
 import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 from base_model import BaseRecommender
+from baselines import fit_biases
 
 class UserBasedCF(BaseRecommender):
 
   # Object initialization
-  def __init__(self, n_neighbors=100, sim_threshold=0.3):
+  def __init__(self, n_neighbors=100, sim_threshold=0.0, sim_shrinkage=25.0, weight_shrinkage=1.0):
     self.n_neighbors = n_neighbors
     self.sim_threshold = sim_threshold
+    self.sim_shrinkage = sim_shrinkage
+    self.weight_shrinkage = weight_shrinkage
     self.user_idx = {}
-    self.user_inv_idx = {}
     self.movie_idx = {}
-    self.movie_inv_idx = {}    
-    self.r_matrix = None        
-    self.b_matrix = None
-    self.r_norms = None
+    self.r_matrix = None
+    self.rated_matrix = None
     self.r_csc = None
-    self.user_means = None
-    self.movie_means = None
+    self.r_norms = None
+    self.b_u = None
+    self.b_i = None
     self.global_mean = 3.5
     self.train_df = None
-    self.movies_df = None
+    self.reset_fallback_stats()
+
+  def reset_fallback_stats(self):
+    self.pairs_predicted = 0
+    self.pairs_without_neighbours = 0
+
+  @property
+  def fallback_rate(self) -> float:
+    return self.pairs_without_neighbours / max(self.pairs_predicted, 1)
 
   def fit(self, train_df: pd.DataFrame, movies_df: pd.DataFrame):
-
-    # Store training and movie data
-    self.train_df = train_df
-    self.movies_df = movies_df
-
-    # Compute global, user and movie mean ratings
-    self.global_mean = float(train_df['rating'].mean())
-    self.user_means = train_df.groupby('userId')['rating'].mean()
-    self.movie_means = train_df.groupby('movieId')['rating'].mean().to_dict()
 
     # Extract unique users and movies
     users = train_df['userId'].unique()
     movies = train_df['movieId'].unique()
+    self._store_catalogue(train_df, movies_df, movies)
 
     # Create mappings between IDs and matrix indices
-    self.user_idx = {u: i for i, u in enumerate(users)}
-    self.user_inv_idx = {i: u for u, i in self.user_idx.items()}
-    self.movie_idx = {m: i for i, m in enumerate(movies)}
-    self.movie_inv_idx = {i: m for m, i in self.movie_idx.items()}
+    self.user_idx = {u: i for i, u in enumerate(users.tolist())}
+    self.movie_idx = {m: i for i, m in enumerate(movies.tolist())}
 
-    # Extract userId, movieId and rating values
-    rows = train_df['userId'].map(self.user_idx).values
-    cols = train_df['movieId'].map(self.movie_idx).values
-    vals = train_df['rating'].values
+    # Baseline per user and movie: similarities and predictions work on what it leaves unexplained
+    self.global_mean, user_bias, movie_bias = fit_biases(train_df, damping=10.0)
+    self.b_u = user_bias.reindex(users).values.astype(np.float32)
+    self.b_i = movie_bias.reindex(movies).values.astype(np.float32)
 
-    n_users, n_movies = len(users), len(movies)
+    # Extract user and movie indices
+    rows = train_df['userId'].map(self.user_idx).values.astype(np.int32)
+    cols = train_df['movieId'].map(self.movie_idx).values.astype(np.int32)
 
-    # Build user-item rating matrix
-    self.r_matrix = csr_matrix((vals, (rows, cols)), shape=(n_users, n_movies))
+    # Build the sparse matrix of baseline residuals
+    residuals = (train_df['rating'].values - self.global_mean - self.b_u[rows] - self.b_i[cols]).astype(np.float32)
+    self.r_matrix = csr_matrix((residuals, (rows, cols)), shape=(len(users), len(movies)))
+
+    # Same pattern of 1s, for counting co-rated movies
+    self.rated_matrix = self.r_matrix.copy()
+    self.rated_matrix.data = np.ones_like(self.rated_matrix.data)
 
     # Convert to CSC format for efficient column-based movie lookups
     self.r_csc = self.r_matrix.tocsc()
 
-    # Mean-centre ratings by user means
-    u_means_mapped = train_df['userId'].map(self.user_means).values
-    centered_vals = vals - u_means_mapped
-    self.b_matrix = csr_matrix((centered_vals, (rows, cols)), shape=(n_users, n_movies))
-
     # Compute user vector magnitudes for cosine similarity
-    self.r_norms = np.sqrt(np.asarray(self.r_matrix.power(2).sum(axis=1))).flatten()
+    self.r_norms = np.sqrt(np.asarray(self.r_matrix.multiply(self.r_matrix).sum(axis=1))).flatten()
     self.r_norms[self.r_norms == 0] = 1.0
+
+  def _similarities(self, u_row: int) -> np.ndarray:
+
+    # Cosine between residuals, which compares taste rather than how many movies two users share
+    numerator = self.r_matrix.dot(self.r_matrix.getrow(u_row).T).toarray().flatten()
+    sims = numerator / (self.r_norms * self.r_norms[u_row])
+
+    # Shrink similarities that rest on few co-rated movies
+    co_rated = self.rated_matrix.dot(self.rated_matrix.getrow(u_row).T).toarray().flatten()
+    sims *= co_rated / (co_rated + self.sim_shrinkage)
+
+    # A user is not their own neighbour
+    sims[u_row] = -1.0
+    return sims
+
+  def _adjustment(self, sims: np.ndarray, m_col: int) -> float:
+
+    # Users who rated the movie, read directly from CSC storage
+    start, stop = self.r_csc.indptr[m_col], self.r_csc.indptr[m_col + 1]
+    peers = self.r_csc.indices[start:stop]
+    peer_residuals = self.r_csc.data[start:stop]
+
+    # Keep neighbours above the similarity threshold
+    peer_sims = sims[peers]
+    valid = peer_sims > self.sim_threshold
+    valid_sims = peer_sims[valid]
+    self.pairs_predicted += 1
+
+    if len(valid_sims) == 0:
+      self.pairs_without_neighbours += 1
+      return 0.0
+
+    valid_residuals = peer_residuals[valid]
+
+    # Select nearest neighbours
+    if len(valid_sims) > self.n_neighbors:
+      top_k = np.argpartition(valid_sims, -self.n_neighbors)[-self.n_neighbors:]
+      valid_sims = valid_sims[top_k]
+      valid_residuals = valid_residuals[top_k]
+
+    # Shrinkage stops a few neighbours from pushing a prediction to the edge of the scale
+    return float(np.dot(valid_sims, valid_residuals) / (valid_sims.sum() + self.weight_shrinkage))
 
   def predict(self, user_ids: np.ndarray, movie_ids: np.ndarray) -> np.ndarray:
 
@@ -74,120 +119,26 @@ class UserBasedCF(BaseRecommender):
     user_ids = np.atleast_1d(user_ids)
     movie_ids = np.atleast_1d(movie_ids)
 
-    # Fill preds with the global mean
-    preds = np.full(len(user_ids), self.global_mean)
-
     # Map userId and movieId to internal matrix indices
-    u_indices = pd.Series(user_ids).map(self.user_idx).fillna(-1).astype(int).values
-    m_indices = pd.Series(movie_ids).map(self.movie_idx).fillna(-1).astype(int).values
+    u_rows = pd.Series(user_ids).map(self.user_idx).fillna(-1).astype(int).values
+    m_cols = pd.Series(movie_ids).map(self.movie_idx).fillna(-1).astype(int).values
 
-    # Store mapped indices while preserving original movieId and prediction order
-    eval_df = pd.DataFrame({
-      'u_row': u_indices, 
-      'm_col': m_indices, 
-      'orig_m': movie_ids, 
-      'idx': np.arange(len(user_ids))
-    })
+    # Start from the baseline, using whichever offsets are known
+    preds = np.full(len(user_ids), self.global_mean)
+    preds[u_rows >= 0] += self.b_u[u_rows[u_rows >= 0]]
+    preds[m_cols >= 0] += self.b_i[m_cols[m_cols >= 0]]
 
-    for u_row, group in eval_df.groupby('u_row'):
+    # Add the neighbourhood adjustment, one user at a time
+    known = np.flatnonzero((u_rows >= 0) & (m_cols >= 0))
+    for u_row, positions in pd.Series(known).groupby(u_rows[known]):
+      sims = self._similarities(u_row)
+      for position in positions.values:
+        preds[position] += self._adjustment(sims, m_cols[position])
 
-      # Check if user found
-      if u_row == -1:
-        preds[group['idx'].values] = [self.movie_means.get(m, self.global_mean) for m in group['orig_m'].values]
-        continue
+    return np.clip(preds, 0.5, 5.0)
 
-      # Retrieve original userId and average rating
-      orig_u = self.user_inv_idx[u_row]
-      u_mean = self.user_means[orig_u]
-
-      # Get user vector
-      r_u = self.r_matrix.getrow(u_row)
-
-      # Compute cosine similarity between target user and all other users 
-      numerator = self.r_matrix.dot(r_u.T).toarray().flatten()
-      denominator = self.r_norms * self.r_norms[u_row]
-
-      # Clip cosine similarity scores to the range [0.0, 1.0]
-      all_sims = np.clip(numerator / denominator, 0.0, 1.0)
-      all_sims[u_row] = -1.0
-
-      # Extract movie indices, prediction positions and original movieId
-      g_m_cols = group['m_col'].values
-      g_idxs = group['idx'].values
-      g_orig_m = group['orig_m'].values
-
-      
-      for m_col, idx, orig_m in zip(g_m_cols, g_idxs, g_orig_m):
-
-        # Check if movie found
-        if m_col == -1:
-          preds[idx] = u_mean
-          continue
-
-        # Retrieve users who rated the movie using CSC column indexing
-        idx_start = self.r_csc.indptr[m_col]
-        idx_end = self.r_csc.indptr[m_col+1]
-        peers_who_rated = self.r_csc.indices[idx_start:idx_end]
-
-        # Require enough users who rated the movie   
-        if len(peers_who_rated) < 3:
-          preds[idx] = self.movie_means.get(orig_m, u_mean)
-          continue
-
-        # Similarity threshold
-        peer_sims = all_sims[peers_who_rated]
-        valid_mask = (peer_sims > self.sim_threshold)
-
-        # Require enough similar neighbours
-        if valid_mask.sum() < 3:
-          preds[idx] = self.movie_means.get(orig_m, u_mean)
-          continue
-
-        # Keep neighbours above similarity threshold
-        valid_sims = peer_sims[valid_mask]
-        valid_peer_rows = peers_who_rated[valid_mask]
-
-        # Select nearest neighbors  
-        if len(valid_sims) > self.n_neighbors:
-          top_k = np.argpartition(valid_sims, -self.n_neighbors)[-self.n_neighbors:]
-          valid_sims = valid_sims[top_k]
-          valid_peer_rows = valid_peer_rows[top_k]
-
-        # Obtain neighbours' mean-centred ratings
-        centered_ratings = np.asarray(self.b_matrix[valid_peer_rows, m_col].toarray()).flatten()
-
-        # Compute similarity-weighted neighbour contribution and normalization factor
-        num_sum = np.dot(valid_sims, centered_ratings)
-        den_sum = np.sum(np.abs(valid_sims))
-
-        # Predict rating using weighted sum of neighbours' mean-centred ratings 
-        if den_sum == 0:
-          preds[idx] = self.movie_means.get(orig_m, u_mean)
-        else:
-          preds[idx] = np.clip(u_mean + (num_sum / den_sum), 0.5, 5.0)
-                    
-    return preds
-
-  def recommend(self, user_id: int, n: int = 10) -> pd.DataFrame:
-
-    # Return empty if user not found
-    if user_id not in self.user_idx:
-      return pd.DataFrame(columns=['title', 'predicted_rating'])
-
-    # Filter for unrated movies
-    rated_movies = set(self.train_df[self.train_df['userId'] == user_id]['movieId'])
-    unrated_movie_ids = np.array([m for m in self.movie_idx if m not in rated_movies])
-
-    # Predict ratings
-    target_user_ids = np.full(len(unrated_movie_ids), user_id)
-    preds = self.predict(target_user_ids, unrated_movie_ids)
-
-    # Construct recommendations df and filter top n recommendations
-    recommendations = pd.DataFrame({'movieId': unrated_movie_ids, 'predicted_rating': preds})
-    top_df = recommendations.nlargest(n, 'predicted_rating')
-
-    # Add movie title
-    result = top_df.merge(self.movies_df[['movieId', 'title']], on='movieId')[['title', 'predicted_rating']]
-    result['predicted_rating'] = result['predicted_rating'].round(3)
-
-    return result.reset_index(drop=True)
+  def score_catalogue(self, user_id: int) -> Tuple[np.ndarray, np.ndarray]:
+    u_row = self.user_idx[user_id]
+    sims = self._similarities(u_row)
+    adjustments = np.array([self._adjustment(sims, m_col) for m_col in range(len(self.movie_ids))])
+    return self.movie_ids, self.global_mean + self.b_u[u_row] + self.b_i + adjustments

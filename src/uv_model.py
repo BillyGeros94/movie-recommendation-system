@@ -1,126 +1,125 @@
+# Load Dependencies
+
+from typing import Dict, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 from base_model import BaseRecommender
+from fold_in import fold_in_user, score_new_user
 
 class UVDecomposition(BaseRecommender):
 
+  training_only = ('train_df', 'P', 'b_u', 'user_idx')
+
   # Object initialization
-  def __init__(self, n_factors=50, std=0.05, seed=42):
+  def __init__(self, n_factors=50, std=0.05, seed=42, fold_in_reg=2.0):
     self.n_factors = n_factors
     self.std = std
     self.seed = seed
+    self.fold_in_reg = fold_in_reg
     self.user_idx = {}
     self.movie_idx = {}
     self.P = None
     self.Q = None
     self.train_df = None
-    self.movies_df = None
     self.b_u = None
     self.b_i = None
     self.global_mean = 3.5
+    self.history = []
+    self.best_epoch = None
 
-  def fit(self, train_df: pd.DataFrame, movies_df: pd.DataFrame, n_epochs=50, lr=0.001, reg=0.02, target_mse=0.55, batch_size=100000):
+  def fit(self, train_df: pd.DataFrame, movies_df: pd.DataFrame, n_epochs=50, lr=0.005, reg=0.02,
+          batch_size=20000, val_df: Optional[pd.DataFrame] = None, patience=3):
 
-    # Store training and movie data
-    self.train_df = train_df
-    self.movies_df = movies_df
-
-    # Compute global mean rating 
+    # Compute global mean rating
     self.global_mean = float(train_df['rating'].mean())
 
     # Extract unique users and movies
     users = train_df['userId'].unique()
     movies = train_df['movieId'].unique()
+    self._store_catalogue(train_df, movies_df, movies)
 
     # Create mappings between IDs and matrix indices
-    self.user_idx = {u: i for i, u in enumerate(users)}
-    self.movie_idx = {m: i for i, m in enumerate(movies)}
+    self.user_idx = {u: i for i, u in enumerate(users.tolist())}
+    self.movie_idx = {m: i for i, m in enumerate(movies.tolist())}
 
-     # Mean used for latent vector initialisation
-    mean_init = np.sqrt(1.0 / self.n_factors)
-    np.random.seed(self.seed)
+    rng = np.random.default_rng(self.seed)
 
-    # Initialise movie latent factor matrix (Q)
-    self.Q = np.random.normal(loc=mean_init, scale=self.std, size=(len(movies), self.n_factors))
-
-    # Initialise user latent factor matrix (P)
-    self.P = np.random.normal(loc=mean_init, scale=self.std, size=(len(users), self.n_factors))
+    # Zero-mean factors: the biases carry the rating level, so P.Q should start near zero
+    self.Q = rng.normal(0.0, self.std, size=(len(movies), self.n_factors)).astype(np.float32)
+    self.P = rng.normal(0.0, self.std, size=(len(users), self.n_factors)).astype(np.float32)
 
     # Initialise biases
-    self.b_u = np.zeros(len(users))
-    self.b_i = np.zeros(len(movies))
+    self.b_u = np.zeros(len(users), dtype=np.float32)
+    self.b_i = np.zeros(len(movies), dtype=np.float32)
 
     # Extract user, movieId and rating values
-    user_indices = train_df['userId'].map(self.user_idx).values
-    movie_indices = train_df['movieId'].map(self.movie_idx).values
-    ratings = train_df['rating'].values
+    user_indices = train_df['userId'].map(self.user_idx).values.astype(np.int32)
+    movie_indices = train_df['movieId'].map(self.movie_idx).values.astype(np.int32)
+    ratings = train_df['rating'].values.astype(np.float32)
     num_observations = len(ratings)
 
+    self.history = []
+    self.best_epoch = None
+    best_rmse, best_state = np.inf, None
+
     # Training loop
-    for epoch in range(n_epochs):
+    for epoch in range(1, n_epochs + 1):
 
       # Randomly shuffle observations each epoch
-      shuffled_idx = np.arange(num_observations)
-      np.random.shuffle(shuffled_idx)
-
-      epoch_squared_errors = 0
+      shuffled_idx = rng.permutation(num_observations).astype(np.int32)
+      epoch_squared_errors = 0.0
 
       for start_idx in range(0, num_observations, batch_size):
 
-        # Set batch boundaries
-        end_idx = min(start_idx + batch_size, num_observations)
-        batch_idx = shuffled_idx[start_idx:end_idx]
-
         # Extract batch data
+        batch_idx = shuffled_idx[start_idx:start_idx + batch_size]
         u_batch = user_indices[batch_idx]
         m_batch = movie_indices[batch_idx]
-        r_batch = ratings[batch_idx]
 
-        # Predict ratings using dot product of latent vectors
-        batch_preds = (self.global_mean 
-               + self.b_u[u_batch] 
-               + self.b_i[m_batch] 
-               + np.sum(self.Q[m_batch] * self.P[u_batch], axis=1))
+        P_batch = self.P[u_batch]
+        Q_batch = self.Q[m_batch]
 
         # Compute prediction errors
-        batch_errors = r_batch - batch_preds
-        epoch_squared_errors += np.sum(batch_errors ** 2)
+        batch_errors = (ratings[batch_idx] - np.float32(self.global_mean) - self.b_u[u_batch] - self.b_i[m_batch]
+                        - np.einsum('ij,ij->i', P_batch, Q_batch))
+        epoch_squared_errors += float(np.dot(batch_errors, batch_errors))
 
-        # Compute gradients for users
-        p_grads = batch_errors[:, np.newaxis] * self.Q[m_batch] - reg * self.P[u_batch]
+        # Gradients for both factor matrices, clipped because one batch can repeat a popular movie many times
+        p_grads = np.clip(batch_errors[:, np.newaxis] * Q_batch - reg * P_batch, -5.0, 5.0)
+        q_grads = np.clip(batch_errors[:, np.newaxis] * P_batch - reg * Q_batch, -5.0, 5.0)
 
-        # Prevent exploding gradients
-        p_grads = np.clip(p_grads, -5.0, 5.0)
-
-        # Update user latent vectors
+        # Update latent vectors
         np.add.at(self.P, u_batch, lr * p_grads)
-
-        # Compute gradients for movies
-        q_grads = batch_errors[:, np.newaxis] * self.P[u_batch] - reg * self.Q[m_batch]
-
-        # Prevent exploding gradients
-        q_grads = np.clip(q_grads, -5.0, 5.0)
-
-        # Update movie latent vectors
         np.add.at(self.Q, m_batch, lr * q_grads)
 
-        # Bias gradients
-        b_u_grads = np.clip(batch_errors - reg * self.b_u[u_batch], -5.0, 5.0)
-        b_i_grads = np.clip(batch_errors - reg * self.b_i[m_batch], -5.0, 5.0)
-        
         # Bias updates
-        np.add.at(self.b_u, u_batch, lr * b_u_grads)
-        np.add.at(self.b_i, m_batch, lr * b_i_grads)
+        np.add.at(self.b_u, u_batch, lr * (batch_errors - reg * self.b_u[u_batch]))
+        np.add.at(self.b_i, m_batch, lr * (batch_errors - reg * self.b_i[m_batch]))
 
-      # Compute Mean Squared Error for the epoch
-      mse = epoch_squared_errors / num_observations
-      print(f"Epoch {epoch+1:02d}/{n_epochs}, observed MSE: {mse:.4f}")
+      record = {'epoch': epoch, 'train_rmse': round(float(np.sqrt(epoch_squared_errors / num_observations)), 4)}
 
-      # Stop early if desired accuracy is reached
-      if mse <= target_mse:
+      # Early stopping watches held-out ratings, so it stops at overfitting rather than at a fixed training error
+      if val_df is not None:
+        record['val_rmse'] = round(self._rmse(val_df), 4)
+        if record['val_rmse'] < best_rmse:
+          best_rmse = record['val_rmse']
+          self.best_epoch = epoch
+          best_state = (self.P.copy(), self.Q.copy(), self.b_u.copy(), self.b_i.copy())
+
+      self.history.append(record)
+      print(record, flush=True)
+
+      if val_df is not None and epoch - self.best_epoch >= patience:
         break
 
-    print(f"Training complete. Final MSE: {mse:.4f}")
+    # Keep the parameters from the best validation epoch
+    if best_state is not None:
+      self.P, self.Q, self.b_u, self.b_i = best_state
+
+  def _rmse(self, ratings_df: pd.DataFrame) -> float:
+    errors = ratings_df['rating'].values - self.predict(ratings_df['userId'].values, ratings_df['movieId'].values)
+    return float(np.sqrt(np.mean(errors ** 2)))
 
   def predict(self, user_ids: np.ndarray, movie_ids: np.ndarray) -> np.ndarray:
 
@@ -139,43 +138,25 @@ class UVDecomposition(BaseRecommender):
     valid = (u_idx >= 0) & (m_idx >= 0)
 
     # Predict ratings using latent vectors
-    preds[valid] = np.clip( self.global_mean + self.b_u[u_idx[valid]] + self.b_i[m_idx[valid]] 
-      + np.sum(self.Q[m_idx[valid]] * self.P[u_idx[valid]], axis=1), 0.5, 5.0)
+    preds[valid] = np.clip(self.global_mean + self.b_u[u_idx[valid]] + self.b_i[m_idx[valid]]
+      + np.einsum('ij,ij->i', self.Q[m_idx[valid]], self.P[u_idx[valid]]), 0.5, 5.0)
 
     return preds
 
-  def recommend(self, user_id: int, n: int = 10) -> pd.DataFrame:
-
-    # Return empty if user not found
-    if user_id not in self.user_idx:
-      return pd.DataFrame(columns=['title', 'predicted_rating'])
-
-    # Get user's latent vector index
+  def score_catalogue(self, user_id: int) -> Tuple[np.ndarray, np.ndarray]:
     user_row = self.user_idx[user_id]
+    return self.movie_ids, self.global_mean + self.b_u[user_row] + self.b_i + self.Q @ self.P[user_row]
 
-    # Movies already rated by the user
-    rated_movies = self.train_df[self.train_df['userId'] == user_id]['movieId']
+  def recommend_new_user(self, ratings: Dict[int, float], n: int = 10) -> pd.DataFrame:
 
-    # Predict ratings for every movie
-    all_preds = np.clip( self.global_mean + self.b_u[user_row] + self.b_i 
-    + np.dot(self.Q, self.P[user_row]), 0.5, 5.0)
+    # Serve a user the model never saw, without changing model state
+    known = {m: r for m, r in ratings.items() if m in self.movie_idx}
+    if not known:
+      return pd.DataFrame(columns=['movieId', 'title', 'predicted_rating'])
 
-    # Recover original movieId
-    movie_ids = list(self.movie_idx.keys())
-    movie_cols = list(self.movie_idx.values())
+    item_indices = np.array([self.movie_idx[m] for m in known])
+    b_u, p_u = fold_in_user(self.Q, self.b_i, self.global_mean, item_indices,
+                            np.array(list(known.values())), reg=self.fold_in_reg)
+    scores = score_new_user(self.Q, self.b_i, self.global_mean, b_u, p_u)
 
-    # Construct recommendations df
-    recommendations = pd.DataFrame({
-      'movieId': movie_ids,
-      'predicted_rating': all_preds[movie_cols]
-    })
-
-    # Filter for unrated movies
-    unrated = recommendations[~recommendations['movieId'].isin(rated_movies)]
-
-    # Get top n recommendations
-    top_df = unrated.nlargest(n, 'predicted_rating')
-    result = top_df.merge(self.movies_df[['movieId', 'title']], on='movieId')[['title', 'predicted_rating']]
-    result['predicted_rating'] = result['predicted_rating'].round(3)
-
-    return result.reset_index(drop=True)
+    return self._top_n(self.movie_ids, scores, set(ratings), n)

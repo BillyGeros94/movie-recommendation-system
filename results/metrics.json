@@ -1,0 +1,133 @@
+{
+  "models": {
+    "random": {
+      "RMSE": null,
+      "MAE": null,
+      "Precision@10": 0.643,
+      "Recall@10": 0.252,
+      "nDCG@10": 0.772,
+      "Catalogue P@10": 0.0039,
+      "Catalogue R@10": 0.001,
+      "Catalogue nDCG@10": 0.0042,
+      "Coverage": 0.5663,
+      "Popularity percentile": 48.67,
+      "seconds": 4
+    },
+    "popularity": {
+      "RMSE": null,
+      "MAE": null,
+      "Precision@10": 0.705,
+      "Recall@10": 0.279,
+      "nDCG@10": 0.814,
+      "Catalogue P@10": 0.1164,
+      "Catalogue R@10": 0.0343,
+      "Catalogue nDCG@10": 0.1271,
+      "Coverage": 0.0119,
+      "Popularity percentile": 99.86,
+      "seconds": 3
+    },
+    "item_mean": {
+      "RMSE": 0.942,
+      "MAE": 0.724,
+      "Precision@10": 0.781,
+      "Recall@10": 0.317,
+      "nDCG@10": 0.855,
+      "Catalogue P@10": 0.0186,
+      "Catalogue R@10": 0.0051,
+      "Catalogue nDCG@10": 0.0174,
+      "Coverage": 0.0019,
+      "Popularity percentile": 59.29,
+      "seconds": 4
+    },
+    "bias": {
+      "RMSE": 0.85,
+      "MAE": 0.643,
+      "Precision@10": 0.781,
+      "Recall@10": 0.317,
+      "nDCG@10": 0.855,
+      "Catalogue P@10": 0.0286,
+      "Catalogue R@10": 0.0085,
+      "Catalogue nDCG@10": 0.0256,
+      "Coverage": 0.0023,
+      "Popularity percentile": 79.92,
+      "seconds": 5
+    },
+    "content": {
+      "RMSE": 0.91,
+      "MAE": 0.68,
+      "Precision@10": 0.796,
+      "Recall@10": 0.322,
+      "nDCG@10": 0.866,
+      "Catalogue P@10": 0.0564,
+      "Catalogue R@10": 0.0167,
+      "Catalogue nDCG@10": 0.0602,
+      "Coverage": 0.153,
+      "Popularity percentile": 80.23,
+      "seconds": 63
+    },
+    "item": {
+      "RMSE": 0.779,
+      "MAE": 0.581,
+      "Precision@10": 0.827,
+      "Recall@10": 0.339,
+      "nDCG@10": 0.887,
+      "Pairs without neighbours": 0.0074,
+      "Catalogue P@10": 0.0385,
+      "Catalogue R@10": 0.011,
+      "Catalogue nDCG@10": 0.0395,
+      "Coverage": 0.1002,
+      "Popularity percentile": 77.89,
+      "seconds": 138
+    },
+    "uv": {
+      "RMSE": 0.77,
+      "MAE": 0.579,
+      "Precision@10": 0.835,
+      "Recall@10": 0.342,
+      "nDCG@10": 0.892,
+      "Catalogue P@10": 0.041,
+      "Catalogue R@10": 0.0129,
+      "Catalogue nDCG@10": 0.0434,
+      "Coverage": 0.0908,
+      "Popularity percentile": 53.78,
+      "seconds": 4247
+    },
+    "user": {
+      "RMSE": 0.79,
+      "MAE": 0.591,
+      "Precision@10": 0.824,
+      "Recall@10": 0.336,
+      "nDCG@10": 0.885,
+      "Pairs without neighbours": 0.0,
+      "Catalogue P@10": 0.0517,
+      "Catalogue R@10": 0.0155,
+      "Catalogue nDCG@10": 0.0554,
+      "Coverage": 0.0465,
+      "Popularity percentile": 69.37,
+      "seconds": 3393
+    }
+  },
+  "run": {
+    "sample": {
+      "eval_users": 5000,
+      "test_ratings": 318303,
+      "catalogue_users": 1000
+    }
+  },
+  "fold_in": {
+    "5": {
+      "n_ratings": 5,
+      "RMSE": 0.857,
+      "Item-only RMSE": 0.942,
+      "Catalogue P@10": 0.0172,
+      "Popularity P@10": 0.0435
+    },
+    "20": {
+      "n_ratings": 20,
+      "RMSE": 0.829,
+      "Item-only RMSE": 0.942,
+      "Catalogue P@10": 0.0216,
+      "Popularity P@10": 0.0453
+    }
+  }
+}
