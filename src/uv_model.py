@@ -5,18 +5,20 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 from base_model import BaseRecommender
-from fold_in import fold_in_user, score_new_user
+from fold_in import fold_in_user, rank_new_user, score_new_user
 
 class UVDecomposition(BaseRecommender):
 
   training_only = ('train_df', 'P', 'b_u', 'user_idx')
 
   # Object initialization
-  def __init__(self, n_factors=50, std=0.05, seed=42, fold_in_reg=2.0):
+  def __init__(self, n_factors=50, std=0.05, seed=42, fold_in_reg=2.0, new_user_candidates=2000):
     self.n_factors = n_factors
     self.std = std
     self.seed = seed
     self.fold_in_reg = fold_in_reg
+    self.new_user_candidates = new_user_candidates
+    self.candidates = None
     self.user_idx = {}
     self.movie_idx = {}
     self.P = None
@@ -58,6 +60,10 @@ class UVDecomposition(BaseRecommender):
     movie_indices = train_df['movieId'].map(self.movie_idx).values.astype(np.int32)
     ratings = train_df['rating'].values.astype(np.float32)
     num_observations = len(ratings)
+
+    # New users are recommended the most-rated movies only
+    rating_counts = np.bincount(movie_indices, minlength=len(movies))
+    self.candidates = np.argsort(-rating_counts, kind='stable')[:self.new_user_candidates]
 
     self.history = []
     self.best_epoch = None
@@ -155,8 +161,18 @@ class UVDecomposition(BaseRecommender):
       return pd.DataFrame(columns=['movieId', 'title', 'predicted_rating'])
 
     item_indices = np.array([self.movie_idx[m] for m in known])
-    b_u, p_u = fold_in_user(self.Q, self.b_i, self.global_mean, item_indices,
-                            np.array(list(known.values())), reg=self.fold_in_reg)
-    scores = score_new_user(self.Q, self.b_i, self.global_mean, b_u, p_u)
+    values = np.array(list(known.values()))
 
-    return self._top_n(self.movie_ids, scores, set(ratings), n)
+    # One calculation chooses the movies, the other estimates the rating shown with them
+    ranking = rank_new_user(self.Q, self.b_i, self.global_mean, item_indices, values, self.candidates, reg=self.fold_in_reg)
+    top = np.argsort(-ranking, kind='stable')[:n]
+    top = top[np.isfinite(ranking[top])]
+
+    b_u, p_u = fold_in_user(self.Q, self.b_i, self.global_mean, item_indices, values, reg=self.fold_in_reg)
+    predicted = score_new_user(self.Q, self.b_i, self.global_mean, b_u, p_u)
+
+    return pd.DataFrame({
+      'movieId': self.movie_ids[top],
+      'title': [self.titles.get(int(m), str(m)) for m in self.movie_ids[top]],
+      'predicted_rating': np.clip(predicted[top], 0.5, 5.0).round(3)
+    })

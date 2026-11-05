@@ -1,9 +1,10 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from baselines import BiasBaseline, ItemMeanBaseline, PopularityBaseline
 from content_model import ContentBasedRecommender, split_genres
-from fold_in import fold_in_user, score_new_user
+from fold_in import fold_in_user, rank_new_user, score_new_user
 from item_model import ItemBasedCF
 from user_model import UserBasedCF
 from uv_model import UVDecomposition
@@ -70,6 +71,40 @@ def test_fold_in_uses_the_ratings_not_just_the_movies():
   _, high = fold_in_user(Q, b_i, 3.5, np.arange(5), np.full(5, 5.0))
   _, low = fold_in_user(Q, b_i, 3.5, np.arange(5), np.full(5, 0.5))
   assert np.dot(high, low) < 0
+
+def test_taste_outweighs_a_better_rated_movie_when_every_rating_is_high():
+
+  # Movies 0-3 share a taste, and movie 4 is a better rated film from the other one
+  Q = np.array([[1.0, 0.0]] * 4 + [[0.0, 1.0]])
+  b_i = np.array([0.0, 0.0, 0.0, 0.0, 0.7])
+  rated, loved = np.arange(3), np.full(3, 5.0)
+
+  ranking = rank_new_user(Q, b_i, 3.5, rated, loved, np.arange(5))
+  assert ranking[3] > ranking[4]
+
+  # Removing a user offset first is what made the lists generic
+  b_u, p_u = fold_in_user(Q, b_i, 3.5, rated, loved)
+  predicted = score_new_user(Q, b_i, 3.5, b_u, p_u)
+  assert predicted[3] < predicted[4]
+
+def test_ranking_leaves_out_rated_and_non_candidate_movies():
+  Q = np.eye(4)
+  ranking = rank_new_user(Q, np.zeros(4), 3.5, np.array([0]), np.array([5.0]), np.array([0, 1, 2]))
+  assert np.isneginf(ranking[[0, 3]]).all()
+  assert np.isfinite(ranking[[1, 2]]).all()
+
+def test_candidates_are_the_most_rated_movies(movies):
+  counts = {1: 5, 2: 1, 3: 3}
+  train = pd.DataFrame([(user, movie, 4.0) for movie, n in counts.items() for user in range(n)],
+                       columns=['userId', 'movieId', 'rating'])
+  model = UVDecomposition(n_factors=2, new_user_candidates=2)
+  model.fit(train, movies, n_epochs=1)
+  assert set(model.movie_ids[model.candidates].tolist()) == {1, 3}
+
+def test_new_user_rating_is_a_prediction_not_a_ranking_score(uv):
+  result = uv.recommend_new_user({m: 5.0 for m in [2, 4, 6, 8, 10]}, n=5)
+  assert result['predicted_rating'].between(0.5, 5.0).all()
+  assert result['predicted_rating'].min() > 3
 
 def test_score_new_user_adds_every_term():
   Q = np.array([[1.0, 0.0], [0.0, 2.0]])

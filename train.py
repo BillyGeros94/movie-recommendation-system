@@ -25,7 +25,7 @@ from baselines import BiasBaseline, ItemMeanBaseline, PopularityBaseline, Random
 from content_model import ContentBasedRecommender
 from data import download_dataset, load_genome, load_movies, prepare_split, sample_users
 from evaluation import RecommenderEvaluator
-from fold_in import fold_in_user, score_new_user
+from fold_in import fold_in_user, rank_new_user, score_new_user
 from item_model import ItemBasedCF
 from user_model import UserBasedCF
 from uv_model import UVDecomposition
@@ -85,6 +85,7 @@ def save_artifacts(name, model):
       'b_i': model.b_i,
       'global_mean': model.global_mean,
       'fold_in_reg': model.fold_in_reg,
+      'candidates': model.candidates,
       'movie_ids': model.movie_ids,
       'titles': np.array([model.titles[int(m)] for m in model.movie_ids], dtype=object)
     }, DEMO_MODEL, compress=3)
@@ -112,9 +113,10 @@ def fold_in_evaluation(model, train, test, users, n_ratings=5, n=10, threshold=3
     item_only = np.clip(model.global_mean + model.b_i[targets], 0.5, 5.0)
     item_only_errors.append((item_only - held_out['rating'].values) ** 2)
 
-    # A new user has only rated these few movies, so everything else is a candidate
-    scores[rated] = -np.inf
-    top = np.argpartition(-scores, n)[:n]
+    # Choose the list as the demo does. A new user has only rated these few movies
+    ranking = rank_new_user(model.Q, model.b_i, model.global_mean, rated, recent['rating'].values,
+                            model.candidates, reg=model.fold_in_reg)
+    top = np.argpartition(-ranking, n)[:n]
     liked = set(targets[held_out['rating'].values >= threshold].tolist())
     precisions.append(len(liked.intersection(top.tolist())) / n)
 

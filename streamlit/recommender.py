@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
-from fold_in import fold_in_user, score_new_user
+from fold_in import fold_in_user, rank_new_user, score_new_user
 
 MIN_RATINGS = 5
 
@@ -24,15 +24,16 @@ def recommend_uv(model: dict, ratings: dict, n: int = 10) -> pd.DataFrame:
     if len(rated) < MIN_RATINGS:
         return pd.DataFrame(columns=['movieId', 'title', 'predicted_rating'])
 
-    # Estimate the new user from their ratings, then score every movie
+    # One calculation chooses the movies, the other estimates the rating shown with them
     item_indices = np.array([positions[m] for m in rated])
-    b_u, p_u = fold_in_user(model['Q'], model['b_i'], model['global_mean'], item_indices,
-                            np.array(list(rated.values())), reg=model['fold_in_reg'])
-    scores = score_new_user(model['Q'], model['b_i'], model['global_mean'], b_u, p_u)
+    values = np.array(list(rated.values()))
+    ranking = rank_new_user(model['Q'], model['b_i'], model['global_mean'], item_indices, values,
+                            model['candidates'], reg=model['fold_in_reg'])
+    top = np.argsort(-ranking, kind='stable')[:n]
+    top = top[np.isfinite(ranking[top])]
 
-    # Keep the best unrated movies
-    scores[item_indices] = -np.inf
-    top = np.argsort(-scores, kind='stable')[:n]
+    b_u, p_u = fold_in_user(model['Q'], model['b_i'], model['global_mean'], item_indices, values, reg=model['fold_in_reg'])
+    scores = score_new_user(model['Q'], model['b_i'], model['global_mean'], b_u, p_u)
 
     return pd.DataFrame({
         'movieId': movie_ids[top],

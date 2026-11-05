@@ -169,14 +169,14 @@ The natural next step is a model trained for ranking on implicit feedback, such 
 
 ### New users
 
-The API and demo serve people who are not in the training data. A new user is placed in the UV model by a ridge regression of their ratings on the fixed item factors, with no retraining. To test this, each of the 1,000 users was rebuilt from only their last few training ratings and evaluated on their test ratings:
+The API and demo serve people who are not in the training data. A new user is placed in the UV model by a ridge regression of their ratings on the fixed item factors, with no retraining. That regression gives the predicted rating. Choosing the list uses the same calculation with two changes. No user offset is removed first, because people tend to rate only what they love, and removing it leaves little taste signal. And only the 2,000 most-rated movies can be recommended, because thinly rated movies have unreliable factors and otherwise win on noise. To test this, each of the 1,000 users was rebuilt from only their last few training ratings and evaluated on their test ratings:
 
 | Ratings given | RMSE | RMSE from item averages alone | Precision@10 | Popularity Precision@10 |
 |---|---|---|---|---|
-| 5 | 0.857 | 0.942 | 0.017 | 0.044 |
-| 20 | 0.829 | 0.942 | 0.022 | 0.045 |
+| 5 | 0.857 | 0.942 | 0.040 | 0.044 |
+| 20 | 0.829 | 0.942 | 0.044 | 0.045 |
 
-Five ratings are enough to learn a lot about how someone will score movies. But for top-10 selection, a most-popular list still finds about twice as many of the movies these users went on to rate and like. As the demo stands, its value is more varied, taste-driven suggestions, not better hit rates.
+Five ratings are enough to learn a lot about how someone will score movies, and the top-10 lists come close to a most-popular list while staying personal. Most of that precision comes from the 2,000-movie limit: choosing from every movie with the plain regression gave 0.017 and 0.022. The cost is that the demo cannot recommend lesser-known movies. The limit was set once and not tuned, but these same users were used to compare the options, so treat these two precision values as indicative.
 
 The precision columns are not comparable with the full-catalogue table. This replay hides the user's older ratings, so movies they had already rated stay in the candidate list and can never count as hits. Both columns are affected, and popularity probably more, because popular movies are the most likely to have been rated already. The comparison within this table is like for like.
 
@@ -241,7 +241,7 @@ POST /recommend/uv
 
 ## Streamlit Demo
 
-An interactive demo of the UV model runs on Streamlit Cloud. Users search for movies the model knows, rate at least 5, and receive 10 personalised recommendations. The ratings are turned into a temporary user with the ridge fold-in described under [New users](#new-users), so no retraining or stored history is involved. The deployed artifact is a lightweight dict of plain arrays: Q, the item biases, the fold-in setting, and the movie IDs and titles.
+An interactive demo of the UV model runs on Streamlit Cloud. Users search for movies the model knows, rate at least 5, and receive 10 personalised recommendations. The ratings are turned into a temporary user as described under [New users](#new-users), so no retraining or stored history is involved. The deployed artifact is a lightweight dict of plain arrays: Q, the item biases, the fold-in setting, the candidate movies, and the movie IDs and titles.
 
 **Run locally:**
 ```bash

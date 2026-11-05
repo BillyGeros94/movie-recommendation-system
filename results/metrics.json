@@ -119,14 +119,14 @@
       "n_ratings": 5,
       "RMSE": 0.857,
       "Item-only RMSE": 0.942,
-      "Catalogue P@10": 0.0172,
+      "Catalogue P@10": 0.0396,
       "Popularity P@10": 0.0435
     },
     "20": {
       "n_ratings": 20,
       "RMSE": 0.829,
       "Item-only RMSE": 0.942,
-      "Catalogue P@10": 0.0216,
+      "Catalogue P@10": 0.0443,
       "Popularity P@10": 0.0453
     }
   }
