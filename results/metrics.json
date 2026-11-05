@@ -119,15 +119,23 @@
       "n_ratings": 5,
       "RMSE": 0.857,
       "Item-only RMSE": 0.942,
-      "Catalogue P@10": 0.0396,
-      "Popularity P@10": 0.0435
+      "UV P@10": 0.0396,
+      "UV pick rating": 4.23,
+      "Hybrid P@10": 0.0661,
+      "Hybrid pick rating": 4.09,
+      "Popularity P@10": 0.0435,
+      "Popularity pick rating": 4.02
     },
     "20": {
       "n_ratings": 20,
       "RMSE": 0.829,
       "Item-only RMSE": 0.942,
-      "Catalogue P@10": 0.0443,
-      "Popularity P@10": 0.0453
+      "UV P@10": 0.0443,
+      "UV pick rating": 4.23,
+      "Hybrid P@10": 0.0817,
+      "Hybrid pick rating": 4.1,
+      "Popularity P@10": 0.0453,
+      "Popularity pick rating": 4.02
     }
   }
 }

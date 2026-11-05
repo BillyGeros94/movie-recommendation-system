@@ -1,6 +1,6 @@
 # Load Dependencies
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -54,4 +54,50 @@ def rank_new_user(Q: np.ndarray, b_i: np.ndarray, global_mean: float, item_indic
   scores[candidates] = b_i[candidates] + Q[candidates] @ taste
   scores[item_indices] = -np.inf
 
+  return scores
+
+def ease_shortlist(ease_weights: np.ndarray, candidates: np.ndarray, item_indices: np.ndarray, ratings: np.ndarray,
+                   n_items: int, size: int = 30, liked_rating: float = 3.5) -> Optional[np.ndarray]:
+  """Pick the movies a user is most likely to watch next, from the movies they liked.
+
+  EASE only knows rated or not rated, so a low rating would count as evidence for similar movies.
+  Movies below liked_rating are therefore treated as not seen. Returns None with no usable evidence.
+  """
+
+  item_indices = np.asarray(item_indices)
+  ratings = np.asarray(ratings, dtype=np.float64)
+
+  # Position of each movie within the candidates, -1 for the rest
+  slots = np.full(n_items, -1)
+  slots[candidates] = np.arange(len(candidates))
+
+  rated_slots = slots[item_indices]
+  liked_slots = rated_slots[(ratings >= liked_rating) & (rated_slots >= 0)]
+  if len(liked_slots) == 0:
+    return None
+
+  scores = ease_weights[liked_slots].sum(axis=0, dtype=np.float64)
+  scores[rated_slots[rated_slots >= 0]] = -np.inf
+
+  top = np.argsort(-scores, kind='stable')[:size]
+  return candidates[top[np.isfinite(scores[top])]]
+
+def rank_hybrid(Q: np.ndarray, b_i: np.ndarray, global_mean: float, item_indices: np.ndarray, ratings: np.ndarray,
+                candidates: np.ndarray, ease_weights: Optional[np.ndarray], reg: float = 2.0, shortlist_size: int = 30,
+                liked_rating: float = 3.5) -> np.ndarray:
+  """EASE chooses a shortlist of likely watches, then the UV ranking orders it by taste.
+
+  Falls back to the UV ranking alone when there is no shortlist, for example if every rating is low.
+  """
+
+  ranking = rank_new_user(Q, b_i, global_mean, item_indices, ratings, candidates, reg=reg)
+  if ease_weights is None:
+    return ranking
+
+  shortlist = ease_shortlist(ease_weights, candidates, item_indices, ratings, len(b_i), shortlist_size, liked_rating)
+  if shortlist is None:
+    return ranking
+
+  scores = np.full(len(b_i), -np.inf)
+  scores[shortlist] = ranking[shortlist]
   return scores

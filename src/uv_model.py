@@ -5,20 +5,26 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 from base_model import BaseRecommender
-from fold_in import fold_in_user, rank_new_user, score_new_user
+from ease import solve_ease
+from fold_in import fold_in_user, rank_hybrid, score_new_user
 
 class UVDecomposition(BaseRecommender):
 
   training_only = ('train_df', 'P', 'b_u', 'user_idx')
 
   # Object initialization
-  def __init__(self, n_factors=50, std=0.05, seed=42, fold_in_reg=2.0, new_user_candidates=2000):
+  def __init__(self, n_factors=50, std=0.05, seed=42, fold_in_reg=2.0, new_user_candidates=2000,
+               ease_reg=500.0, shortlist_size=30, liked_rating=3.5):
     self.n_factors = n_factors
     self.std = std
     self.seed = seed
     self.fold_in_reg = fold_in_reg
     self.new_user_candidates = new_user_candidates
     self.candidates = None
+    self.ease_reg = ease_reg
+    self.shortlist_size = shortlist_size
+    self.liked_rating = liked_rating
+    self.ease_weights = None
     self.user_idx = {}
     self.movie_idx = {}
     self.P = None
@@ -153,6 +159,16 @@ class UVDecomposition(BaseRecommender):
     user_row = self.user_idx[user_id]
     return self.movie_ids, self.global_mean + self.b_u[user_row] + self.b_i + self.Q @ self.P[user_row]
 
+  def fit_ease(self, train_df: pd.DataFrame):
+
+    # EASE on the candidates only, which keeps the weights small enough to ship with the model
+    slots = np.full(len(self.b_i), -1)
+    slots[self.candidates] = np.arange(len(self.candidates))
+    columns = slots[train_df['movieId'].map(self.movie_idx).values]
+    rows = pd.factorize(train_df['userId'])[0]
+    keep = columns >= 0
+    self.ease_weights = solve_ease(rows[keep], columns[keep], len(self.candidates), reg=self.ease_reg)
+
   def recommend_new_user(self, ratings: Dict[int, float], n: int = 10) -> pd.DataFrame:
 
     # Serve a user the model never saw, without changing model state
@@ -164,7 +180,8 @@ class UVDecomposition(BaseRecommender):
     values = np.array(list(known.values()))
 
     # One calculation chooses the movies, the other estimates the rating shown with them
-    ranking = rank_new_user(self.Q, self.b_i, self.global_mean, item_indices, values, self.candidates, reg=self.fold_in_reg)
+    ranking = rank_hybrid(self.Q, self.b_i, self.global_mean, item_indices, values, self.candidates, self.ease_weights,
+                          reg=self.fold_in_reg, shortlist_size=max(self.shortlist_size, n), liked_rating=self.liked_rating)
     top = np.argsort(-ranking, kind='stable')[:n]
     top = top[np.isfinite(ranking[top])]
 

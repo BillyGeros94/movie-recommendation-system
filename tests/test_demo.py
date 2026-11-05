@@ -9,8 +9,10 @@ from uv_model import UVDecomposition
 def demo_model(ratings, movies):
   uv = UVDecomposition(n_factors=4, std=0.1)
   uv.fit(ratings, movies, n_epochs=150, lr=0.02, batch_size=500)
+  uv.fit_ease(ratings)
   return {
     'Q': uv.Q, 'b_i': uv.b_i, 'global_mean': uv.global_mean, 'fold_in_reg': uv.fold_in_reg, 'candidates': uv.candidates,
+    'ease_weights': uv.ease_weights, 'shortlist_size': uv.shortlist_size, 'liked_rating': uv.liked_rating,
     'movie_ids': uv.movie_ids, 'titles': np.array([uv.titles[int(m)] for m in uv.movie_ids], dtype=object)
   }
 
@@ -38,8 +40,19 @@ def test_too_few_ratings_give_nothing(demo_model):
 
 def test_only_candidates_are_recommended(demo_model):
   allowed = demo_model['candidates'][:20]
-  result = recommend_uv({**demo_model, 'candidates': allowed}, {m: 4.0 for m in range(1, 6)})
+  model = {**demo_model, 'candidates': allowed, 'ease_weights': None}
+  result = recommend_uv(model, {m: 4.0 for m in range(1, 6)})
   assert set(result['movieId']) <= set(demo_model['movie_ids'][allowed].tolist())
+
+def test_recommendations_come_from_the_shortlist(demo_model):
+  model = {**demo_model, 'shortlist_size': 12}
+  ratings = {m: 5.0 for m in [2, 4, 6, 8, 10]}
+  result = recommend_uv(model, ratings, n=10)
+  assert len(result) == 10
+  assert not set(ratings) & set(result['movieId'])
+
+def test_all_low_ratings_still_get_recommendations(demo_model):
+  assert len(recommend_uv(demo_model, {m: 0.5 for m in [2, 4, 6, 8, 10]})) == 10
 
 def test_numpy_movie_ids_are_accepted(demo_model):
   ratings = {np.int64(m): 4.0 for m in range(1, 6)}

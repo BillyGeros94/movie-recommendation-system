@@ -4,7 +4,7 @@ Recommendation systems are among the most impactful applications of machine lear
 
 This project builds a movie recommendation engine from scratch on the [MovieLens](https://grouplens.org/datasets/movielens/) `ml-latest` dataset. Four algorithms are implemented behind one class interface and compared with four simple baselines on the same held-out ratings. The models are served through a FastAPI layer, and a live demo runs on Streamlit Cloud.
 
-**The main result:** UV decomposition is the most accurate model, with an RMSE of 0.770 against 0.850 for a baseline that only knows user and movie averages. But when each model has to pick 10 movies from the whole catalogue, none of the four beats a plain most-popular list. [Results](#results) covers both findings and why they differ.
+**The main result:** UV decomposition is the most accurate model, with an RMSE of 0.770 against 0.850 for a baseline that only knows user and movie averages. But when each model has to pick 10 movies from the whole catalogue, none of the four beats a plain most-popular list, because they estimate ratings and not what people will watch. For new users, a hybrid that adds EASE to choose likely watches does beat it. [Results](#results) covers these findings and why they differ.
 
 ---
 
@@ -41,7 +41,7 @@ The filtered utility matrix is still 97.34% sparse, which is the fundamental cha
 | Train | 20,721,823 |
 | Test | 5,220,954 |
 
-Hyperparameters were chosen by `tune.py` on a validation split, the last eighth of each user's training ratings. The test set played no part. Grids ran on 8,000 sampled users to fit modest hardware. The UV stopping epoch and the item similarity shrinkage were then rechecked on all users, because both depend on data size. The user-based settings were not, so they may be less well tuned than the others.
+Hyperparameters were chosen by `tune.py` on a validation split, the last eighth of each user's training ratings. The test set played no part, apart from two new-user settings described under [New users](#new-users). Grids ran on 8,000 sampled users to fit modest hardware. The UV stopping epoch and the item similarity shrinkage were then rechecked on all users, because both depend on data size. The user-based settings were not, so they may be less well tuned than the others.
 
 ---
 
@@ -62,8 +62,9 @@ movie-recommendation-system/
 │   ├── config.py                # Tuned hyperparameters
 │   ├── content_model.py         # Content-based filtering
 │   ├── data.py                  # Download, filtering and the temporal split
+│   ├── ease.py                  # EASE, used to shortlist movies for new users
 │   ├── evaluation.py            # Re-ranking and full-catalogue evaluation
-│   ├── fold_in.py               # Places a new user in the UV model from a few ratings
+│   ├── fold_in.py               # New-user scoring and the EASE + UV hybrid
 │   ├── item_model.py            # Item-based collaborative filtering
 │   ├── user_model.py            # User-based collaborative filtering
 │   └── uv_model.py              # UV decomposition
@@ -165,20 +166,34 @@ Random and popularity produce rankings, not rating estimates, so they have no RM
 - **Good rating accuracy does not imply good top-10 selection.** Content-based has the worst RMSE of the four models but the best full-catalogue precision among them. With 1,000 users the order among the personalised models is indicative rather than settled.
 - **Neighbour coverage is close to complete.** Item-based CF fell back to the baseline for 0.74% of test pairs and user-based CF for less than 0.01%. These fallbacks are counted in the metrics, not skipped.
 
-The natural next step is a model trained for ranking on implicit feedback, such as BPR or weighted ALS, which learns what users choose to watch and not only how they score it. Blending popularity into the personalised scores is a simpler option.
+The hybrid under [New users](#new-users) tests this explanation by adding a model of what people watch, and it does beat popularity for new users. The natural next step is to evaluate the same idea for existing users in this table.
 
 ### New users
 
-The API and demo serve people who are not in the training data. A new user is placed in the UV model by a ridge regression of their ratings on the fixed item factors, with no retraining. That regression gives the predicted rating. Choosing the list uses the same calculation with two changes. No user offset is removed first, because people tend to rate only what they love, and removing it leaves little taste signal. And only the 2,000 most-rated movies can be recommended, because thinly rated movies have unreliable factors and otherwise win on noise. To test this, each of the 1,000 users was rebuilt from only their last few training ratings and evaluated on their test ratings:
+The API and demo serve people who are not in the training data, and they use a hybrid of two ideas.
 
-| Ratings given | RMSE | RMSE from item averages alone | Precision@10 | Popularity Precision@10 |
-|---|---|---|---|---|
-| 5 | 0.857 | 0.942 | 0.040 | 0.044 |
-| 20 | 0.829 | 0.942 | 0.044 | 0.045 |
+**EASE** (Embarrassingly Shallow Autoencoder) predicts what someone will watch, which the four models above do not. It learns how movies go together from who rated what, ignoring the rating values. Each movie gets a ridge regression that predicts whether a user rated it from the other movies they rated, and one matrix inverse solves them all at once. It is built on the 2,000 most-rated movies, with a regularisation strength of 500.
 
-Five ratings are enough to learn a lot about how someone will score movies, and the top-10 lists come close to a most-popular list while staying personal. Most of that precision comes from the 2,000-movie limit: choosing from every movie with the plain regression gave 0.017 and 0.022. The cost is that the demo cannot recommend lesser-known movies. The limit was set once and not tuned, but these same users were used to compare the options, so treat these two precision values as indicative.
+**The hybrid** runs in three steps, with no retraining:
 
-The precision columns are not comparable with the full-catalogue table. This replay hides the user's older ratings, so movies they had already rated stay in the candidate list and can never count as hits. Both columns are affected, and popularity probably more, because popular movies are the most likely to have been rated already. The comparison within this table is like for like.
+1. Only the user's movies rated 3.5 or above count as seen, because EASE would otherwise treat a disliked movie as evidence for similar ones.
+2. EASE picks a shortlist of the 30 movies they are most likely to watch.
+3. UV orders that shortlist by taste. The user is placed in the model by a ridge regression of their ratings on the fixed item factors, here with no user offset removed, because people tend to rate only what they love and removing it leaves little taste signal.
+
+The predicted rating is a separate calculation, the same regression with the user offset. To test all this, each of the 1,000 users was rebuilt from only their last few training ratings and evaluated on their test ratings:
+
+| Ratings given | RMSE | RMSE from item averages alone | Precision@10, UV alone | Precision@10, hybrid | Precision@10, popularity |
+|---|---|---|---|---|---|
+| 5 | 0.857 | 0.942 | 0.040 | 0.066 | 0.044 |
+| 20 | 0.829 | 0.942 | 0.044 | 0.082 | 0.045 |
+
+"UV alone" orders the same 2,000 movies with no shortlist. The rated picks average 4.09 and 4.10 for the hybrid, 4.23 for UV alone and 4.02 for popularity.
+
+So for new users the hybrid beats popularity on both counts, finding about 50% more liked movies from five ratings and 80% more from twenty, with better-rated picks. It trades some rating for that against UV alone, because it finds more of what people actually watch. EASE alone scores slightly higher on precision (0.078 and 0.085) but its picks are rated lower (3.89).
+
+Three limits apply. The 2,000-movie limit means lesser-known movies cannot be recommended. The shortlist size and the 3.5 threshold were compared on these same users, so a check on 1,000 other test users is the fairer figure: about 0.066 and 0.079 for the hybrid against 0.045 and 0.046 for popularity. And like every metric here, this rewards movies people went on to rate, so only a live test could show which list people prefer.
+
+The precision columns are not comparable with the full-catalogue table. This replay hides the user's older ratings, so movies they had already rated stay in the candidate list and can never count as hits. All three columns are affected, and popularity probably more, because popular movies are the most likely to have been rated already. The comparison within this table is like for like.
 
 ---
 
@@ -202,7 +217,7 @@ Interactive docs are available at `http://localhost:8000/docs`.
 | `GET` | `/movies/search?query=` | Plain-text title search, first 10 matches |
 | `POST` | `/recommend/content` | Content-based recommendations |
 | `POST` | `/recommend/item` | Item-based CF recommendations |
-| `POST` | `/recommend/uv` | Matrix factorisation recommendations |
+| `POST` | `/recommend/uv` | Recommendations for a new user, from the EASE + UV hybrid |
 
 Recommendation endpoints return a list of `{"movieId", "title"}` objects, with `n` between 1 and 100. Ratings must be between 0.5 and 5.0. A request whose genres, tags or movies are all unknown to the model gets a 422 response explaining why.
 
@@ -225,7 +240,7 @@ POST /recommend/item
 }
 ```
 
-**UV example:**
+**Hybrid example:**
 ```json
 POST /recommend/uv
 {
@@ -241,7 +256,7 @@ POST /recommend/uv
 
 ## Streamlit Demo
 
-An interactive demo of the UV model runs on Streamlit Cloud. Users search for movies the model knows, rate at least 5, and receive 10 personalised recommendations. The ratings are turned into a temporary user as described under [New users](#new-users), so no retraining or stored history is involved. The deployed artifact is a lightweight dict of plain arrays: Q, the item biases, the fold-in setting, the candidate movies, and the movie IDs and titles.
+An interactive demo of the hybrid runs on Streamlit Cloud. Users search for movies the model knows, rate at least 5, and receive 10 personalised recommendations. The ratings are turned into a temporary user as described under [New users](#new-users), so no retraining or stored history is involved. The deployed artifact is a lightweight dict of plain arrays: Q, the item biases, the fold-in setting, the candidate movies, the EASE weights, and the movie IDs and titles.
 
 **Run locally:**
 ```bash
@@ -260,10 +275,11 @@ Posters are optional. To show them, add `TMDB_API_KEY = "..."` to `.streamlit/se
 - **Iterative co-filtering** rather than a single-pass threshold, because removing users can cascade into movie removals and vice versa.
 - **Per-user temporal split** rather than random, so each user is tested on ratings that came after the ones the model saw.
 - **Baselines and full-catalogue metrics** alongside the usual table, because re-ranking scores alone made every model look strong.
-- **Hyperparameters chosen on a validation split**, keeping the test set out of every decision.
+- **Hyperparameters chosen on a validation split**, keeping the test set out of those decisions. The two new-user settings compared on test users are named under [New users](#new-users).
 - **Residuals for both CF models**, so similarity reflects shared taste rather than how generously people rate or how many movies they share.
 - **Sparse matrix storage** (CSR/CSC) throughout, to keep 26M ratings in memory without materialising a dense 81K × 12K matrix.
 - **Batched evaluation** and block-wise similarity computation, which let the whole pipeline run in 4 GB of RAM.
+- **EASE on the 2,000 most-rated movies only**, which cuts its weights from about 570 MB to 16 MB, so they ship with the model.
 - **Stateless serving**: new users are folded in with a read-only calculation, so requests never change a shared model.
 - **Slim artifacts** that drop training data, keeping all models small enough for the repository and free of user ratings.
 

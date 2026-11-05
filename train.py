@@ -25,7 +25,7 @@ from baselines import BiasBaseline, ItemMeanBaseline, PopularityBaseline, Random
 from content_model import ContentBasedRecommender
 from data import download_dataset, load_genome, load_movies, prepare_split, sample_users
 from evaluation import RecommenderEvaluator
-from fold_in import fold_in_user, rank_new_user, score_new_user
+from fold_in import fold_in_user, rank_hybrid, rank_new_user, score_new_user
 from item_model import ItemBasedCF
 from user_model import UserBasedCF
 from uv_model import UVDecomposition
@@ -67,6 +67,7 @@ def fit_model(name, train, movies, dataset_dir):
   elif name == 'uv':
     model = UVDecomposition(**config.UV_INIT)
     model.fit(train, movies, **config.UV_FIT)
+    model.fit_ease(train)
     return model
   model.fit(train, movies)
   return model
@@ -86,6 +87,9 @@ def save_artifacts(name, model):
       'global_mean': model.global_mean,
       'fold_in_reg': model.fold_in_reg,
       'candidates': model.candidates,
+      'ease_weights': model.ease_weights,
+      'shortlist_size': model.shortlist_size,
+      'liked_rating': model.liked_rating,
       'movie_ids': model.movie_ids,
       'titles': np.array([model.titles[int(m)] for m in model.movie_ids], dtype=object)
     }, DEMO_MODEL, compress=3)
@@ -94,7 +98,9 @@ def fold_in_evaluation(model, train, test, users, n_ratings=5, n=10, threshold=3
 
   # Replays the demo: each user arrives with only their last few training ratings
   movie_idx = model.movie_idx
-  squared_errors, item_only_errors, precisions, popularity_precisions = [], [], [], []
+  squared_errors, item_only_errors = [], []
+  precisions = {'UV': [], 'Hybrid': [], 'Popularity': []}
+  pick_ratings = {name: [] for name in precisions}
   popularity = np.bincount(train['movieId'].map(movie_idx).values, minlength=len(model.b_i)).astype(float)
   train_groups = {u: g for u, g in train[train['userId'].isin(users)].groupby('userId')}
   test_groups = {u: g for u, g in test[test['userId'].isin(users)].groupby('userId')}
@@ -113,25 +119,35 @@ def fold_in_evaluation(model, train, test, users, n_ratings=5, n=10, threshold=3
     item_only = np.clip(model.global_mean + model.b_i[targets], 0.5, 5.0)
     item_only_errors.append((item_only - held_out['rating'].values) ** 2)
 
-    # Choose the list as the demo does. A new user has only rated these few movies
-    ranking = rank_new_user(model.Q, model.b_i, model.global_mean, rated, recent['rating'].values,
-                            model.candidates, reg=model.fold_in_reg)
-    top = np.argpartition(-ranking, n)[:n]
-    liked = set(targets[held_out['rating'].values >= threshold].tolist())
-    precisions.append(len(liked.intersection(top.tolist())) / n)
-
-    # Popularity gets the same candidates, so the two precisions compare directly
+    # Choose the lists as the demo does. A new user has only rated these few movies
+    values = recent['rating'].values
     popular = popularity.copy()
     popular[rated] = -np.inf
-    popularity_precisions.append(len(liked.intersection(np.argpartition(-popular, n)[:n].tolist())) / n)
+    lists = {
+      'UV': rank_new_user(model.Q, model.b_i, model.global_mean, rated, values, model.candidates, reg=model.fold_in_reg),
+      'Hybrid': rank_hybrid(model.Q, model.b_i, model.global_mean, rated, values, model.candidates, model.ease_weights,
+                            reg=model.fold_in_reg, shortlist_size=max(model.shortlist_size, n), liked_rating=model.liked_rating),
+      'Popularity': popular
+    }
 
-  return {
+    # A pick counts when the user went on to rate it, and is a hit when they liked it
+    actual = dict(zip(targets.tolist(), held_out['rating'].values.tolist()))
+    for name, scores_for_list in lists.items():
+      top = np.argpartition(-scores_for_list, n)[:n]
+      known = [actual[i] for i in top.tolist() if i in actual]
+      precisions[name].append(sum(rating >= threshold for rating in known) / n)
+      pick_ratings[name].extend(known)
+
+  results = {
     'n_ratings': n_ratings,
     'RMSE': round(float(np.sqrt(np.concatenate(squared_errors).mean())), 3),
-    'Item-only RMSE': round(float(np.sqrt(np.concatenate(item_only_errors).mean())), 3),
-    f'Catalogue P@{n}': round(float(np.mean(precisions)), 4),
-    f'Popularity P@{n}': round(float(np.mean(popularity_precisions)), 4)
+    'Item-only RMSE': round(float(np.sqrt(np.concatenate(item_only_errors).mean())), 3)
   }
+  for name in precisions:
+    results[f'{name} P@{n}'] = round(float(np.mean(precisions[name])), 4)
+    results[f'{name} pick rating'] = round(float(np.mean(pick_ratings[name])), 2) if pick_ratings[name] else None
+
+  return results
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

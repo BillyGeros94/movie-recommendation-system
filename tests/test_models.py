@@ -4,7 +4,8 @@ import pytest
 
 from baselines import BiasBaseline, ItemMeanBaseline, PopularityBaseline
 from content_model import ContentBasedRecommender, split_genres
-from fold_in import fold_in_user, rank_new_user, score_new_user
+from ease import solve_ease
+from fold_in import ease_shortlist, fold_in_user, rank_hybrid, rank_new_user, score_new_user
 from item_model import ItemBasedCF
 from user_model import UserBasedCF
 from uv_model import UVDecomposition
@@ -105,6 +106,69 @@ def test_new_user_rating_is_a_prediction_not_a_ranking_score(uv):
   result = uv.recommend_new_user({m: 5.0 for m in [2, 4, 6, 8, 10]}, n=5)
   assert result['predicted_rating'].between(0.5, 5.0).all()
   assert result['predicted_rating'].min() > 3
+
+def test_ease_equals_one_ridge_regression_per_movie():
+  rng = np.random.default_rng(3)
+  X = (rng.random((40, 6)) < 0.5).astype(float)
+  rows, columns = np.nonzero(X)
+  weights = solve_ease(rows, columns, 6, reg=2.0)
+
+  for movie in range(6):
+    others = [m for m in range(6) if m != movie]
+    F = X[:, others]
+    expected = np.linalg.solve(F.T @ F + 2.0 * np.eye(5), F.T @ X[:, movie])
+    assert weights[others, movie] == pytest.approx(expected, abs=1e-5)
+    assert weights[movie, movie] == 0
+
+def test_shortlist_treats_low_ratings_as_not_seen():
+
+  # Movie 0 points to movie 2, and movie 1 points to movie 3
+  weights = np.zeros((4, 4), dtype=np.float32)
+  weights[0, 2] = weights[1, 3] = 1.0
+  shortlist = ease_shortlist(weights, np.arange(4), np.array([0, 1]), np.array([5.0, 0.5]), 4, size=1)
+  assert shortlist.tolist() == [2]
+
+def test_shortlist_keeps_a_rating_at_the_liked_threshold():
+  weights = np.zeros((3, 3), dtype=np.float32)
+  weights[0, 1] = 1.0
+  assert ease_shortlist(weights, np.arange(3), np.array([0]), np.array([3.5]), 3, size=1).tolist() == [1]
+
+def test_shortlist_leaves_out_rated_movies():
+  weights = np.ones((4, 4), dtype=np.float32)
+  shortlist = ease_shortlist(weights, np.arange(4), np.array([0, 1]), np.array([5.0, 1.0]), 4, size=4)
+  assert set(shortlist.tolist()) == {2, 3}
+
+def test_shortlist_uses_positions_within_the_candidates():
+
+  # Candidates are not the first movies, so catalogue and weight positions differ
+  weights = np.zeros((3, 3), dtype=np.float32)
+  weights[0, 2] = 1.0
+  candidates = np.array([5, 7, 9])
+  assert ease_shortlist(weights, candidates, np.array([5]), np.array([5.0]), 10, size=1).tolist() == [9]
+
+def test_hybrid_is_limited_to_the_shortlist_and_ordered_by_taste():
+  Q = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+  b_i = np.array([0.0, 0.0, 0.5, 0.0])
+  weights = np.zeros((4, 4), dtype=np.float32)
+  weights[0, 1], weights[0, 2] = 2.0, 1.0
+  scores = rank_hybrid(Q, b_i, 3.5, np.array([0]), np.array([5.0]), np.arange(4), weights, shortlist_size=2)
+  assert np.isneginf(scores[[0, 3]]).all()
+
+  # EASE preferred movie 1, and the UV ranking moves movie 2 ahead of it
+  assert scores[2] > scores[1]
+
+def test_hybrid_falls_back_without_a_shortlist():
+  Q, b_i = np.eye(3), np.zeros(3)
+  rated, low = np.array([0]), np.array([0.5])
+  weights = np.ones((3, 3), dtype=np.float32)
+  plain = rank_new_user(Q, b_i, 3.5, rated, low, np.arange(3))
+  assert rank_hybrid(Q, b_i, 3.5, rated, low, np.arange(3), weights) == pytest.approx(plain)
+
+def test_new_users_can_ask_for_more_than_the_shortlist(ratings, movies):
+  model = fit_uv(ratings, movies)
+  model.fit_ease(ratings)
+  model.shortlist_size = 5
+  assert len(model.recommend_new_user({m: 5.0 for m in [2, 4, 6, 8, 10]}, n=20)) == 20
 
 def test_score_new_user_adds_every_term():
   Q = np.array([[1.0, 0.0], [0.0, 2.0]])
