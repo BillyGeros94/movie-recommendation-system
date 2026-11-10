@@ -17,5 +17,5 @@ def test_fold_in_evaluation_reports_comparators(ratings, movies):
 
   # The two taste groups are visible from five ratings, which item averages cannot use
   assert result['RMSE'] < result['Item-only RMSE']
-  for name in ('UV', 'Hybrid', 'Popularity'):
+  for name in ('UV', 'Hybrid', 'Popularity', 'EASE'):
     assert 0 <= result[f'{name} P@10'] <= 1

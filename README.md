@@ -107,7 +107,7 @@ The results below use the default sample. To compute rating metrics on all 81,61
 python train.py --eval-users 0
 ```
 
-Evaluating every user mostly costs user-based CF time, which grows with the number of users: about an hour for 5,000 users on the laptop above. `--eval-users 20000` is a middle ground, and `--models uv item` limits a run to selected models. Artifacts should be built with the pinned versions, because joblib files can fail to load under different library versions.
+Evaluating every user mostly costs user-based CF time, which grows with the number of users: about an hour for 5,000 users on the laptop above. `--eval-users 20000` is a middle ground, and `--models uv item` limits a run to selected models. `--new-users-only` recomputes just the new-user figures from the saved UV model, in a few minutes once the data is downloaded, without training or changing any model file; it stops without writing anything if the figures already saved do not come out the same. Artifacts should be built with the pinned versions, because joblib files can fail to load under different library versions.
 
 ---
 
@@ -191,7 +191,7 @@ The predicted rating is a separate calculation, the same regression with the use
 
 So for new users the hybrid beats popularity on both counts, finding about 50% more liked movies from five ratings and 80% more from twenty, with better-rated picks. It trades some rating for that against UV alone, because it finds more of what people actually watch. EASE alone scores slightly higher on precision (0.078 and 0.085) but its picks are rated lower (3.89).
 
-Three limits apply. The 2,000-movie limit means lesser-known movies cannot be recommended. The shortlist size and the 3.5 threshold were compared on these same users, so a check on 1,000 other test users is the fairer figure: about 0.066 and 0.079 for the hybrid against 0.045 and 0.046 for popularity. And like every metric here, this rewards movies people went on to rate, so only a live test could show which list people prefer.
+Three limits apply. The 2,000-movie limit means lesser-known movies cannot be recommended. The shortlist size and the 3.5 threshold were compared on these same users, so a check on 1,000 other test users, drawn from outside the 5,000-user evaluation sample, is the fairer figure: 0.073 and 0.091 for the hybrid against 0.047 and 0.049 for popularity (`fold_in_other_users` in `results/metrics.json`). And like every metric here, this rewards movies people went on to rate, so only a live test could show which list people prefer.
 
 The precision columns are not comparable with the full-catalogue table. This replay hides the user's older ratings, so movies they had already rated stay in the candidate list and can never count as hits. All three columns are affected, and popularity probably more, because popular movies are the most likely to have been rated already. The comparison within this table is like for like.
 
@@ -219,7 +219,7 @@ Interactive docs are available at `http://localhost:8000/docs`.
 | `POST` | `/recommend/item` | Item-based CF recommendations |
 | `POST` | `/recommend/uv` | Recommendations for a new user, from the EASE + UV hybrid |
 
-Recommendation endpoints return a list of `{"movieId", "title"}` objects, with `n` between 1 and 100. Ratings must be between 0.5 and 5.0. A request whose genres, tags or movies are all unknown to the model gets a 422 response explaining why.
+Recommendation endpoints return a list of `{"movieId", "title"}` objects, with `n` between 1 and 100. Ratings must be between 0.5 and 5.0, and `/recommend/uv` needs at least 5 rated movies, the smallest number the hybrid was tested with. A request whose genres, tags or movies are all unknown to the model gets a 422 response explaining why.
 
 **Content-based example:**
 ```json
@@ -246,7 +246,10 @@ POST /recommend/uv
 {
   "rated_movies": [
     {"movieId": 318, "rating": 5.0},
-    {"movieId": 296, "rating": 4.5}
+    {"movieId": 296, "rating": 4.5},
+    {"movieId": 593, "rating": 4.0},
+    {"movieId": 2571, "rating": 5.0},
+    {"movieId": 356, "rating": 3.5}
   ],
   "n": 10
 }

@@ -124,7 +124,9 @@
       "Hybrid P@10": 0.0661,
       "Hybrid pick rating": 4.09,
       "Popularity P@10": 0.0435,
-      "Popularity pick rating": 4.02
+      "Popularity pick rating": 4.02,
+      "EASE P@10": 0.0779,
+      "EASE pick rating": 3.89
     },
     "20": {
       "n_ratings": 20,
@@ -135,7 +137,37 @@
       "Hybrid P@10": 0.0817,
       "Hybrid pick rating": 4.1,
       "Popularity P@10": 0.0453,
-      "Popularity pick rating": 4.02
+      "Popularity pick rating": 4.02,
+      "EASE P@10": 0.0848,
+      "EASE pick rating": 3.89
+    }
+  },
+  "fold_in_other_users": {
+    "5": {
+      "n_ratings": 5,
+      "RMSE": 0.846,
+      "Item-only RMSE": 0.959,
+      "UV P@10": 0.0462,
+      "UV pick rating": 4.25,
+      "Hybrid P@10": 0.0727,
+      "Hybrid pick rating": 4.07,
+      "Popularity P@10": 0.0469,
+      "Popularity pick rating": 4.07,
+      "EASE P@10": 0.0774,
+      "EASE pick rating": 3.83
+    },
+    "20": {
+      "n_ratings": 20,
+      "RMSE": 0.809,
+      "Item-only RMSE": 0.959,
+      "UV P@10": 0.0535,
+      "UV pick rating": 4.28,
+      "Hybrid P@10": 0.0911,
+      "Hybrid pick rating": 4.14,
+      "Popularity P@10": 0.0487,
+      "Popularity pick rating": 4.07,
+      "EASE P@10": 0.0919,
+      "EASE pick rating": 3.84
     }
   }
 }

@@ -40,8 +40,11 @@ class RatedMovie(BaseModel):
   movieId: int
   rating: float = Field(ge=0.5, le=5.0)
 
+# The hybrid was evaluated with 5 and 20 ratings, and the demo asks for at least 5, so fewer is refused
+MIN_UV_RATINGS = 5
+
 class UVRequest(BaseModel):
-  rated_movies: List[RatedMovie] = Field(min_length=1)
+  rated_movies: List[RatedMovie] = Field(min_length=MIN_UV_RATINGS)
   n: int = Field(10, ge=1, le=100)
 
 def to_response(recommendations):

@@ -32,7 +32,10 @@ def test_item_endpoint_rejects_only_unknown_seeds(client):
   assert client.post('/recommend/item', json={'movieIds': [999999]}).status_code == 422
 
 def test_uv_endpoint_rejects_unknown_movies_and_bad_ratings(client):
-  assert client.post('/recommend/uv', json={'rated_movies': [{'movieId': 999999, 'rating': 4}]}).status_code == 422
+  unknown = [{'movieId': 999990 + i, 'rating': 4} for i in range(5)]
+  assert client.post('/recommend/uv', json={'rated_movies': unknown}).status_code == 422
+  too_few = [{'movieId': m, 'rating': 4} for m in [2, 4, 6, 8]]
+  assert client.post('/recommend/uv', json={'rated_movies': too_few}).status_code == 422
   assert client.post('/recommend/uv', json={'rated_movies': [{'movieId': 1, 'rating': 9}]}).status_code == 422
   assert client.post('/recommend/uv', json={'rated_movies': []}).status_code == 422
 
@@ -57,7 +60,7 @@ def test_search_finds_titles_case_insensitively(client):
 def test_concurrent_requests_all_succeed_and_leave_models_unchanged(client):
   uv, item = api.app.state.uv_model, api.app.state.item_model
   q_shape, sim_shape = uv.Q.shape, item.sim.shape
-  body = {'rated_movies': [{'movieId': 2, 'rating': 5}, {'movieId': 3, 'rating': 1}], 'n': 3}
+  body = {'rated_movies': [{'movieId': m, 'rating': r} for m, r in [(2, 5), (3, 1), (5, 4), (7, 2), (9, 4.5)]], 'n': 3}
 
   def call(i):
     if i % 2:
