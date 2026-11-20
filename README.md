@@ -2,7 +2,7 @@
 
 Recommendation systems are among the most impactful applications of machine learning, powering content discovery across streaming platforms, e-commerce, and social media. At their core they solve a single problem: given a large catalogue and a user with unknown preferences over most of it, surface the items most likely to be relevant.
 
-This project builds a movie recommendation engine from scratch on the [MovieLens](https://grouplens.org/datasets/movielens/) `ml-latest` dataset. Four algorithms are implemented behind one class interface and compared with four simple baselines on the same held-out ratings. The models are served through a FastAPI layer, and a live demo runs on Streamlit Cloud.
+This project builds a movie recommendation engine from scratch on the [MovieLens](https://grouplens.org/datasets/movielens/) `ml-latest` dataset. Four algorithms are implemented behind one class interface and compared with four simple baselines on the same held-out ratings. The models are served through a FastAPI layer, and a live app runs on Streamlit Cloud.
 
 **The main result:** UV decomposition is the most accurate model, with an RMSE of 0.770 against 0.850 for a baseline that only knows user and movie averages. But when each model has to pick 10 movies from the whole catalogue, none of the four beats a plain most-popular list, because they estimate ratings and not what people will watch. For new users, a hybrid that adds EASE to choose likely watches does beat it. [Results](#results) covers these findings and why they differ.
 
@@ -76,7 +76,8 @@ movie-recommendation-system/
 │   ├── models/                  # Slim model artifacts, holding no user data
 │   └── requirements.txt
 ├── streamlit/
-│   ├── app.py                   # Streamlit demo
+│   ├── app.py                   # Streamlit app
+│   ├── ui.py                    # The app's look: colours, type, layout
 │   ├── recommender.py           # Search and recommendation logic
 │   ├── links.csv
 │   ├── requirements.txt
@@ -170,7 +171,7 @@ The hybrid under [New users](#new-users) tests this explanation by adding a mode
 
 ### New users
 
-The API and demo serve people who are not in the training data, and they use a hybrid of two ideas.
+The API and app serve people who are not in the training data, and they use a hybrid of two ideas.
 
 **EASE** (Embarrassingly Shallow Autoencoder) predicts what someone will watch, which the four models above do not. It learns how movies go together from who rated what, ignoring the rating values. Each movie gets a ridge regression that predicts whether a user rated it from the other movies they rated, and one matrix inverse solves them all at once. It is built on the 2,000 most-rated movies, with a regularisation strength of 500.
 
@@ -257,9 +258,9 @@ POST /recommend/uv
 
 ---
 
-## Streamlit Demo
+## Streamlit App
 
-An interactive demo of the hybrid runs on Streamlit Cloud. Users search for movies the model knows, rate at least 5, and receive 10 personalised recommendations. The ratings are turned into a temporary user as described under [New users](#new-users), so no retraining or stored history is involved. The deployed artifact is a lightweight dict of plain arrays: Q, the item biases, the fold-in setting, the candidate movies, the EASE weights, and the movie IDs and titles.
+An interactive app built on the hybrid runs on Streamlit Cloud. Users search for movies the model knows, rate at least 5, and receive 10 personalised recommendations, each with the rating the model predicts they would give it. The ratings are turned into a temporary user as described under [New users](#new-users), so no retraining or stored history is involved. The deployed artifact is a lightweight dict of plain arrays: Q, the item biases, the fold-in setting, the candidate movies, the EASE weights, and the movie IDs and titles.
 
 **Run locally:**
 ```bash
@@ -269,7 +270,7 @@ streamlit run streamlit/app.py
 
 Posters are optional. To show them, add `TMDB_API_KEY = "..."` to `.streamlit/secrets.toml`. On Streamlit Cloud, choose Python 3.12 or later in the app settings.
 
-**Live demo:** *[Movie Recommendation System](https://movie-recommender-billygeros.streamlit.app/)*
+**Live app:** *[Movie Recommendation System](https://movie-recommender-billygeros.streamlit.app/)*
 
 ---
 
