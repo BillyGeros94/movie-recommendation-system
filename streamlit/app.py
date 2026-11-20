@@ -1,4 +1,9 @@
+"""Movie Recommender: rate a few films and get recommendations from a matrix factorisation model.
+
+Run locally from the project folder:  streamlit run streamlit/app.py
+"""
 import random
+import re
 from datetime import date
 
 import streamlit as st
@@ -7,11 +12,12 @@ import pandas as pd
 import requests
 from pathlib import Path
 
+import ui
 from recommender import MIN_RATINGS, recommend_uv, search_movies
 
 st.set_page_config(
-    page_title="Movie Recommender",
-    page_icon="🎬"
+    page_title="Movie Recommender · Rate a few films, find the next one",
+    page_icon=":material/movie:"
 )
 
 # -------------------------
@@ -173,94 +179,129 @@ def get_poster(movie_id):
         return None
 
 # -------------------------
-# Streamlit UI
+# Interface
 # -------------------------
 
-st.title("🎬 Movie Recommendation System")
-st.write(f"Rate at least {MIN_RATINGS} movies and get personalised recommendations.")
+BRAND = "Movie Recommender"
+GLYPH = '<path class="f" d="M10.5 8.2 L18.6 13 L10.5 17.8 Z"/>'   # play
+EXTRA_CSS = """
+.poster { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; display: block;
+  background: var(--soft); border: 1px solid var(--line); }
+.tile { width: 100%; aspect-ratio: 2 / 3; border-radius: 8px; background: var(--soft); border: 1px solid var(--line);
+  display: flex; align-items: flex-end; padding: .8rem; box-sizing: border-box; font-size: .98rem; font-weight: 600;
+  letter-spacing: -.02em; line-height: 1.2; color: var(--ink); font-family: 'Inter', system-ui, sans-serif; }
+.thumb { width: 34px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 4px; background: var(--soft); display: block; }
+.rec { margin-bottom: 1.2rem; }
+.rec .mono { margin: .55rem 0 .15rem; }
+.rec .t { font-size: .88rem; line-height: 1.3; color: var(--ink); font-family: 'Inter', system-ui, sans-serif; }
+.rated { display: flex; align-items: center; gap: .8rem; min-height: 2.6rem; }
+.rated .t { font-size: .95rem; color: var(--ink); font-family: 'Inter', system-ui, sans-serif; }
+[class*="st-key-rated_"] { border-top: 1px solid var(--line); padding: .35rem 0; }
+[class*="st-key-rated_"] button { border: 0 !important; background: transparent; color: var(--muted); }
+[class*="st-key-rated_"] .stButton { display: flex; justify-content: flex-end; }
+[class*="st-key-rated_"] button:hover { color: var(--ink); }
+.st-key-progress .mono { text-align: right; }
+"""
 
-if "ratings" not in st.session_state:
-    st.session_state.ratings = {}
 
-# -------------------------
-# Movie search
-# -------------------------
+def nice(title):
+    """MovieLens titles as people write them: "Matrix, The (1999)" -> "The Matrix (1999)", without the
+    alternative titles in brackets."""
+    m = re.match(r"^(.*?)\s*\((\d{4})\)\s*$", title)
+    if not m:
+        return title
+    name, year = m.groups()
+    name = re.sub(r"\s*\([^)]*\)", "", name).strip()
+    article = re.match(r"^(.*), (The|A|An)$", name)
+    if article:
+        name = f"{article[2]} {article[1]}"
+    return f"{name} ({year})"
 
-search_query = st.text_input("Search for a movie")
 
+def poster_html(movie_id, title, cls="poster"):
+    """The poster, or a quiet title tile when there is none (no TMDB key, or no poster)."""
+    url = get_poster(movie_id)
+    if url:
+        return f'<img class="{cls}" src="{url}" alt="{title}">', True
+    if cls == "thumb":
+        return '<div class="thumb"></div>', False
+    name, _, year = title.rpartition(" (")
+    return f'<div class="tile"><div>{name}<div class="mono" style="margin-top:.35rem">{year.rstrip(")")}</div></div></div>', False
+
+
+st.session_state.setdefault("ratings", {})
+ratings = st.session_state.ratings
+ui.apply(width="900px", extra=EXTRA_CSS)
+
+right = ui.top_bar(BRAND, GLYPH, widths=(5, 1.6))
+with right:
+    st.markdown(f'<div class="mono" style="text-align:right">{min(len(ratings), MIN_RATINGS)} / {MIN_RATINGS} rated</div>'
+                if len(ratings) < MIN_RATINGS else
+                f'<div class="mono" style="text-align:right">{len(ratings)} rated</div>', unsafe_allow_html=True)
+
+ui.hero(f"{len(movies_df):,} films · MovieLens ratings · Matrix factorisation",
+        "Rate a few films,", "find the next one.",
+        f"Rate at least {MIN_RATINGS} films you have seen. The model places your taste among other viewers' ratings "
+        "and recommends the films you are most likely to rate highly.")
+
+# ---- 01 Rate ----
+ui.label("01 · Rate a film")
+search_query = st.text_input("Search", placeholder="Search by title", label_visibility="collapsed")
 if search_query:
     filtered = search_movies(movies_df, search_query)
     if not filtered.empty:
+        left, mid, add = st.columns([3.2, 2, 1.1], vertical_alignment="bottom")
         # Select by movieId, because different movies can share a title
-        movie_id = st.selectbox(
-            "Select a movie",
-            filtered["movieId"].tolist(),
-            format_func=lambda m: titles_by_id[m]
-        )
-
-        selected_rating = st.slider(
-            "Your rating",
-            min_value=0.5,
-            max_value=5.0,
-            value=4.0,
-            step=0.5
-        )
-
-        if st.button("Add movie"):
-            st.session_state.ratings[movie_id] = selected_rating
-            st.success(f"Added **{titles_by_id[movie_id]}** with rating {selected_rating:.1f}/5.0")
+        movie_id = left.selectbox("Film", filtered["movieId"].tolist(), format_func=lambda m: nice(titles_by_id[m]))
+        selected_rating = mid.slider("Your rating", min_value=0.5, max_value=5.0, value=4.0, step=0.5, format="%.1f")
+        if add.button("Add", type="primary", width="stretch"):
+            ratings[movie_id] = selected_rating
+            st.session_state.pop("recs", None)
+            st.toast(f"Rated {nice(titles_by_id[movie_id])}: {selected_rating:.1f} / 5")
+            st.rerun()
     else:
-        st.warning("No movies found. Try a different search.")
+        st.markdown('<div class="note">No films match that title. Try fewer words or another spelling.</div>',
+                    unsafe_allow_html=True)
 
-# -------------------------
-# Show current ratings
-# -------------------------
+# ---- 02 Your ratings ----
+ui.label(f"02 · Your ratings · {len(ratings)}")
+if not ratings:
+    st.markdown('<div class="note">Films you rate appear here.</div>', unsafe_allow_html=True)
+for movie_id, rating in list(ratings.items()):
+    with st.container(key=f"rated_{movie_id}"):
+        a, b, c = st.columns([8, 1.4, 1.1], vertical_alignment="center")
+        title = nice(titles_by_id[movie_id])
+        a.markdown(f'<div class="rated">{poster_html(movie_id, title, "thumb")[0]}'
+                   f'<span class="t">{title}</span></div>', unsafe_allow_html=True)
+        b.markdown(f'<div class="mono">{float(rating):.1f} / 5</div>', unsafe_allow_html=True)
+        if c.button("Remove", key=f"delete_{movie_id}", type="tertiary"):
+            del ratings[movie_id]
+            st.session_state.pop("recs", None)
+            st.rerun()
 
-st.subheader("Your ratings")
-
-if len(st.session_state.ratings) == 0:
-    st.info("No movies rated yet.")
+# ---- 03 Recommendations ----
+ui.label("03 · Recommendations")
+missing = MIN_RATINGS - len(ratings)
+if missing > 0:
+    st.markdown(f'<div class="note">Rate {missing} more film{"s" if missing > 1 else ""} to see your '
+                'recommendations.</div>', unsafe_allow_html=True)
+elif "recs" not in st.session_state:
+    if st.button("Get recommendations", type="primary"):
+        st.session_state.recs = recommend_uv(model, ratings, n=10)
+        st.rerun()
 else:
-    for movie_id, rating in list(st.session_state.ratings.items()):
-        poster_url = get_poster(movie_id)
+    results = list(st.session_state.recs.itertuples())
+    for start in range(0, len(results), 5):          # one row of five at a time, so the rows line up
+        cols = st.columns(5)
+        for i, row in enumerate(results[start:start + 5], start=start):
+            title = nice(row.title)
+            art, has_poster = poster_html(row.movieId, title)
+            cols[i - start].markdown(f'<div class="rec">{art}<div class="mono">{i + 1:02d} · '
+                                     f'{row.predicted_rating:.1f} predicted</div>'
+                                     + (f'<div class="t">{title}</div>' if has_poster else "") + '</div>',
+                                     unsafe_allow_html=True)
+    st.markdown('<div class="note">Predicted: the rating the model expects you to give, out of 5. '
+                'Recommendations update when your ratings change.</div>', unsafe_allow_html=True)
 
-        col1, col2, col3 = st.columns([1, 4, 1])
-
-        with col1:
-            if poster_url:
-                st.image(poster_url, width=60)
-
-        with col2:
-            st.write(f"🎬 **{titles_by_id[movie_id]}** — {float(rating):.1f}/5.0")
-
-        with col3:
-            if st.button("❌", key=f"delete_{movie_id}"):
-                del st.session_state.ratings[movie_id]
-                st.rerun()
-
-# -------------------------
-# Recommend
-# -------------------------
-
-st.write(f"Movies rated: {len(st.session_state.ratings)}")
-
-if len(st.session_state.ratings) >= MIN_RATINGS:
-    if st.button("Get Recommendations"):
-        results = recommend_uv(model, st.session_state.ratings, n=10)
-
-        st.subheader("Recommended movies")
-        for _, row in results.iterrows():
-            poster_url = get_poster(row["movieId"])
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                if poster_url:
-                    st.image(poster_url, width=60)
-            with col2:
-                st.write(f"🎬 **{row['title']}**")
-else:
-    st.warning(f"Please rate at least {MIN_RATINGS} movies first.")
-
-st.caption(
-    "Ratings data: MovieLens, GroupLens Research. "
-    "This product uses the TMDB API but is not endorsed or certified by TMDB."
-)
+ui.foot("Ratings: MovieLens, GroupLens Research · Posters: TMDB. This product uses the TMDB API but is not "
+        "endorsed or certified by TMDB.")
