@@ -3,8 +3,9 @@ name: Keep the demo awake
 on:
   schedule:
     # Streamlit Community Cloud puts apps to sleep after 12 hours without traffic.
-    # Every 6 hours leaves a margin for GitHub starting scheduled runs late.
-    - cron: "23 */6 * * *"
+    # GitHub can start scheduled runs late or skip them under load, so run every
+    # 3 hours: the app only sleeps if three runs in a row are lost.
+    - cron: "23 */3 * * *"
   workflow_dispatch:   # adds a "Run workflow" button for manual runs
 
 permissions:
