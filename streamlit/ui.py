@@ -84,17 +84,12 @@ button[kind^="primary"] p { color: var(--bg) !important; }
 """
 
 
-def mode() -> str:
-    try:
-        return "dark" if st.context.theme.type == "dark" else "light"
-    except Exception:   # an older or headless context: light
-        return "light"
-
-
 def apply(width: str = "780px", extra: str = ""):
-    """The page's styles, in the viewer's theme."""
+    """The page's styles. Each colour is light-dark(light, dark): the browser picks by the theme Streamlit is showing
+    (the device's, or Light / Dark chosen in Streamlit's menu), at once and without a rerun."""
     css = CSS
-    for k, v in {**PALETTE[mode()], "width": width, "extra": extra}.items():
+    tokens = {k: f"light-dark({PALETTE['light'][k]}, {PALETTE['dark'][k]})" for k in PALETTE["light"]}
+    for k, v in {**tokens, "width": width, "extra": extra}.items():
         css = css.replace("{" + k + "}", v)
     st.markdown(css, unsafe_allow_html=True)
 
