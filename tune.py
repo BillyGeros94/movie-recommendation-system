@@ -145,6 +145,8 @@ def main():
   # 7/8 of the 80% training share leaves 70/10/20 overall
   train = train[train['userId'].isin(sample_users(train, args.tune_users))]
   fit_part, val = temporal_split(train, train_fraction=0.875)
+
+  # A movie the fitted part never saw could only get a fallback prediction, which would blur the comparison
   val = val[val['movieId'].isin(fit_part['movieId'].unique())]
   print(f'Tuning on {len(fit_part):,} ratings, validating on {len(val):,}.', flush=True)
 

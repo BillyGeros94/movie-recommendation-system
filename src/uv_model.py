@@ -97,11 +97,13 @@ class UVDecomposition(BaseRecommender):
                         - np.einsum('ij,ij->i', P_batch, Q_batch))
         epoch_squared_errors += float(np.dot(batch_errors, batch_errors))
 
-        # Gradients for both factor matrices, clipped because one batch can repeat a popular movie many times
+        # Gradients of the squared error with L2 regularisation: e * q - reg * p for users, e * p - reg * q for movies.
+        # Clipped because one batch can repeat a popular movie many times
         p_grads = np.clip(batch_errors[:, np.newaxis] * Q_batch - reg * P_batch, -5.0, 5.0)
         q_grads = np.clip(batch_errors[:, np.newaxis] * P_batch - reg * Q_batch, -5.0, 5.0)
 
-        # Update latent vectors
+        # Update latent vectors. np.add.at, not P[u_batch] += ...: a user or movie can appear several times in one
+        # batch, and plain fancy-index assignment would keep only one of those updates
         np.add.at(self.P, u_batch, lr * p_grads)
         np.add.at(self.Q, m_batch, lr * q_grads)
 
@@ -122,6 +124,7 @@ class UVDecomposition(BaseRecommender):
       self.history.append(record)
       print(record, flush=True)
 
+      # Stop once validation RMSE has not improved for `patience` epochs in a row
       if val_df is not None and epoch - self.best_epoch >= patience:
         break
 

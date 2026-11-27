@@ -78,7 +78,8 @@ class RecommenderEvaluator():
     # Compute recall for each user and average
     recall = (hits.groupby(top_n['userId']).sum() / relevant_counts).fillna(0).mean()
 
-    # Compute Discounted Cumulative Gain (DCG)
+    # Compute Discounted Cumulative Gain (DCG). The gain is the actual rating (graded relevance),
+    # so a 5-star movie at the top counts more than a 4-star one; catalogue_evaluation uses 0/1 hits
     top_n['dcg'] = top_n['rating'] / np.log2(top_n['rank'] + 1)
     dcg_sum = top_n.groupby('userId')['dcg'].sum()
 
@@ -137,6 +138,8 @@ class RecommenderEvaluator():
 
       # Top N among movies unseen in training
       scores = np.where(np.isin(movie_ids, seen_by_user.get(user_id, [])), -np.inf, scores)
+
+      # argpartition finds the n best in linear time without sorting all ~12K movies; only those n are then sorted
       top = np.argpartition(-scores, n)[:n]
       top = top[np.argsort(-scores[top], kind='stable')]
       top_ids = movie_ids[top]

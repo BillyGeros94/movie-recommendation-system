@@ -73,7 +73,8 @@ class UserBasedCF(BaseRecommender):
 
   def _similarities(self, u_row: int) -> np.ndarray:
 
-    # Cosine between residuals, which compares taste rather than how many movies two users share
+    # Cosine between residuals, which compares taste rather than how many movies two users share.
+    # One sparse product against all 81K users per target user: this is why user-based CF is the slow model
     numerator = self.r_matrix.dot(self.r_matrix.getrow(u_row).T).toarray().flatten()
     sims = numerator / (self.r_norms * self.r_norms[u_row])
 

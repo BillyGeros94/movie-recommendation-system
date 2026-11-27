@@ -63,6 +63,8 @@ def temporal_split(ratings: pd.DataFrame, train_fraction: float = 0.8) -> Tuple[
   ordered = ratings.sort_values(['userId', 'timestamp']).reset_index(drop=True)
   user_totals = ordered.groupby('userId')['userId'].transform('count')
   user_ranks = ordered.groupby('userId').cumcount() + 1
+
+  # A user with 150 ratings: ratings 1-120 by time go to train, 121-150 to test
   train_mask = user_ranks <= user_totals * train_fraction
   return ordered[train_mask], ordered[~train_mask]
 

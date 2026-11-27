@@ -14,9 +14,12 @@ def solve_ease(user_rows: np.ndarray, item_columns: np.ndarray, n_items: int, re
   values = np.ones(len(user_rows), dtype=np.float64)
   matrix = csr_matrix((values, (user_rows, item_columns)), shape=(int(user_rows.max()) + 1, n_items))
 
+  # G = X'X counts how many users rated each pair of movies; reg on the diagonal is the ridge penalty
   gram = (matrix.T @ matrix).toarray()
   gram[np.diag_indices(n_items)] += reg
 
+  # Steck (2019): with P = G^-1, the weights are B = -P / diag(P) column by column, with a zero diagonal.
+  # The zero diagonal is the constraint that stops a movie from simply predicting itself
   inverse = np.linalg.inv(gram)
   weights = -inverse / np.diag(inverse)
   np.fill_diagonal(weights, 0)

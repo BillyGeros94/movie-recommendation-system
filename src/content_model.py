@@ -25,6 +25,7 @@ class ContentBasedRecommender(BaseRecommender):
 
   # Object initialization
   def __init__(self):
+    # max_df=0.8 drops terms found in over 80% of movies, which say nothing about any one of them
     self.vectorizer = TfidfVectorizer(max_df=0.8, stop_words='english')
     self.interactions = None
     self.user_means = None
@@ -94,6 +95,9 @@ class ContentBasedRecommender(BaseRecommender):
 
     # Weighted sum of rated movie vectors: liked movies pull the profile in, disliked movies push it away
     profile = self.interactions.getrow(u_row).dot(self.tfidf_matrix)
+
+    # Cosine lies in [-1, 1]; times the rating spread it becomes a move of up to one standard deviation
+    # above or below the user's own mean
     return self.user_means[u_row] + self._similarities(profile) * self.rating_std
 
   def predict(self, user_ids: np.ndarray, movie_ids: np.ndarray) -> np.ndarray:

@@ -76,6 +76,7 @@ def ease_shortlist(ease_weights: np.ndarray, candidates: np.ndarray, item_indice
   if len(liked_slots) == 0:
     return None
 
+  # EASE score of each candidate = sum of its weights from the liked movies (the user's 0/1 row times B)
   scores = ease_weights[liked_slots].sum(axis=0, dtype=np.float64)
   scores[rated_slots[rated_slots >= 0]] = -np.inf
 

@@ -109,6 +109,8 @@ class ItemBasedCF(BaseRecommender):
     rated_vector = np.zeros(len(self.movie_ids), dtype=np.float32)
     rated_vector[rated_cols] = 1.0
 
+    # Two sparse matrix-vector products score every candidate at once: the numerator sums similarity x residual
+    # over the rated neighbours, the weight sums their similarities (0 means no rated neighbour: baseline only)
     neighbours = self.sim if candidate_cols is None else self.sim[candidate_cols]
     numerators = neighbours @ residual_vector
     weights = neighbours @ rated_vector

@@ -12,6 +12,8 @@ def fit_biases(train_df: pd.DataFrame, damping: float = 10.0) -> Tuple[float, pd
   global_mean = float(train_df['rating'].mean())
   centred = train_df['rating'].astype('float64') - global_mean
 
+  # b_i = sum(r - mean) / (n_ratings + damping): with 10 ratings and damping 10 the offset is halved,
+  # with 1,000 ratings it is almost the plain average
   movie_groups = centred.groupby(train_df['movieId'])
   b_i = movie_groups.sum() / (movie_groups.size() + damping)
 
